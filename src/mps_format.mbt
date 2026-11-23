@@ -250,3 +250,157 @@ pub fn parse_mps(
   }
   model
 }
+
+///|
+/// Export a Model to industry-standard free-format Netlib/MIPLIB MPS (.mps) text.
+pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
+  let buf = StringBuilder()
+  buf.write_string("NAME          ")
+  buf.write_string(name)
+  buf.write_string("\nROWS\n")
+  buf.write_string(" N  OBJ\n")
+
+  let row_names : Array[String] = []
+  for i = 0; i < self.constraints.length(); i = i + 1 {
+    let c = self.constraints[i]
+    let rname = if c.name.length() > 0 { c.name } else { "R" + i.to_string() }
+    row_names.push(rname)
+    let rtype = match c.relation {
+      Le => " L  "
+      Ge => " G  "
+      Eq => " E  "
+    }
+    buf.write_string(rtype)
+    buf.write_string(rname)
+    buf.write_string("\n")
+  }
+
+  // Build column-major entries: for each variable j, list of (row_name, coeff)
+  let col_entries : Array[Array[(String, Double)]] = []
+  let sense_sign = match self.sense {
+    Minimize => 1.0
+    Maximize => -1.0
+  }
+  for j = 0; j < self.vars.length(); j = j + 1 {
+    let entries : Array[(String, Double)] = []
+    if self.vars[j].obj != 0.0 {
+      entries.push(("OBJ", self.vars[j].obj * sense_sign))
+    }
+    col_entries.push(entries)
+  }
+  for i = 0; i < self.constraints.length(); i = i + 1 {
+    let c = self.constraints[i]
+    let rname = row_names[i]
+    for k = 0; k < c.terms.length(); k = k + 1 {
+      let t = c.terms[k]
+      if t.coeff != 0.0 {
+        col_entries[t.var_id.index].push((rname, t.coeff))
+      }
+    }
+  }
+
+  buf.write_string("COLUMNS\n")
+  let mut in_int = false
+  let mut mark_id = 0
+  for j = 0; j < self.vars.length(); j = j + 1 {
+    let v = self.vars[j]
+    let need_int = match v.kind {
+      Continuous => false
+      Integer | Binary => true
+    }
+    if need_int && !in_int {
+      buf.write_string("    MARK")
+      buf.write_string(mark_id.to_string())
+      buf.write_string("     'MARKER'                 'INTORG'\n")
+      mark_id = mark_id + 1
+      in_int = true
+    } else if !need_int && in_int {
+      buf.write_string("    MARK")
+      buf.write_string(mark_id.to_string())
+      buf.write_string("     'MARKER'                 'INTEND'\n")
+      mark_id = mark_id + 1
+      in_int = false
+    }
+    let entries = col_entries[j]
+    if entries.length() == 0 {
+      buf.write_string("    ")
+      buf.write_string(v.name)
+      buf.write_string("  OBJ  0.0\n")
+    } else {
+      for e = 0; e < entries.length(); e = e + 1 {
+        let (rname, coeff) = entries[e]
+        buf.write_string("    ")
+        buf.write_string(v.name)
+        buf.write_string("  ")
+        buf.write_string(rname)
+        buf.write_string("  ")
+        buf.write_string(coeff.to_string())
+        buf.write_string("\n")
+      }
+    }
+  }
+  if in_int {
+    buf.write_string("    MARK")
+    buf.write_string(mark_id.to_string())
+    buf.write_string("     'MARKER'                 'INTEND'\n")
+  }
+
+  buf.write_string("RHS\n")
+  for i = 0; i < self.constraints.length(); i = i + 1 {
+    if self.constraints[i].rhs != 0.0 {
+      buf.write_string("    RHS1  ")
+      buf.write_string(row_names[i])
+      buf.write_string("  ")
+      buf.write_string(self.constraints[i].rhs.to_string())
+      buf.write_string("\n")
+    }
+  }
+
+  buf.write_string("BOUNDS\n")
+  for j = 0; j < self.vars.length(); j = j + 1 {
+    let v = self.vars[j]
+    let has_lb = v.lb > -1.0e200
+    let has_ub = v.ub < 1.0e200
+    match v.kind {
+      Binary => {
+        buf.write_string(" BV BND1  ")
+        buf.write_string(v.name)
+        buf.write_string("\n")
+      }
+      _ =>
+        if !has_lb && !has_ub {
+          buf.write_string(" FR BND1  ")
+          buf.write_string(v.name)
+          buf.write_string("\n")
+        } else if has_lb && has_ub && (v.ub - v.lb).abs() <= 1.0e-12 {
+          buf.write_string(" FX BND1  ")
+          buf.write_string(v.name)
+          buf.write_string("  ")
+          buf.write_string(v.lb.to_string())
+          buf.write_string("\n")
+        } else {
+          if !has_lb {
+            buf.write_string(" MI BND1  ")
+            buf.write_string(v.name)
+            buf.write_string("\n")
+          } else if v.lb != 0.0 {
+            buf.write_string(" LO BND1  ")
+            buf.write_string(v.name)
+            buf.write_string("  ")
+            buf.write_string(v.lb.to_string())
+            buf.write_string("\n")
+          }
+          if has_ub {
+            buf.write_string(" UP BND1  ")
+            buf.write_string(v.name)
+            buf.write_string("  ")
+            buf.write_string(v.ub.to_string())
+            buf.write_string("\n")
+          }
+        }
+    }
+  }
+
+  buf.write_string("ENDATA\n")
+  buf.to_string()
+}

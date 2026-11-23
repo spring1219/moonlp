@@ -709,3 +709,31 @@ test "20. multi-period supply chain production & inventory LP" {
   assert_true(m.verify_solution(sol))
   assert_approx(sol.objective, 235.0, 1.0e-6)
 }
+
+///|
+test "21. Netlib MPS export -> parse_mps -> solve round-trip (LP & MILP)" {
+  // Build a mixed integer + continuous model, export to MPS, re-parse and verify identical optimum
+  let m = Model::new(Minimize)
+  let x = m.add_int_var("X1", lb=1.0, ub=6.0, obj=3.0)
+  let y = m.add_binary_var("B1", obj=5.0)
+  let z = m.add_continuous_var("C1", lb=0.0, ub=10.0, obj=2.0)
+  m.add_constraint(
+    "DEM",
+    [
+      { var_id: x, coeff: 1.0, },
+      { var_id: y, coeff: 3.0, },
+      { var_id: z, coeff: 1.0, },
+    ],
+    Ge,
+    6.5,
+  )
+  let sol1 = m.solve()
+  assert_eq(sol1.status, Optimal)
+
+  let mps = m.to_mps_string(name="ROUNDTRIP")
+  let parsed = parse_mps(mps)
+  let sol2 = parsed.solve()
+  assert_eq(sol2.status, Optimal)
+  assert_true(parsed.verify_solution(sol2))
+  assert_approx(sol2.objective, sol1.objective, 1.0e-6)
+}
