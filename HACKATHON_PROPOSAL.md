@@ -7,6 +7,9 @@
 ### 1. 项目名称
 **`moonlp` — 纯 MoonBit 线性规划（LP）与混合整数规划（MILP）求解器与建模库**
 
+### 1.1 开源仓库地址
+**https://github.com/spring1219/moonlp** （GitHub ID：`spring1219`）
+
 ### 2. 参赛赛道
 **新项目方向 — 开源基础工具库 / 科学计算与运筹优化**
 
