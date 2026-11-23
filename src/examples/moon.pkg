@@ -1,0 +1,5 @@
+import {
+  "moonlp/moonlp",
+}
+
+pkgtype(kind: "executable")
