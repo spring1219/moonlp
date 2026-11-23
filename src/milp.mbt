@@ -3,7 +3,7 @@
 /// Supports Binary, General Integer, and Continuous mixed variables.
 
 ///|
-struct BBNode {
+priv struct BBNode {
   lbs : Array[Double]
   ubs : Array[Double]
   bound : Double // LP relaxation bound (in minimization space)
@@ -24,7 +24,7 @@ fn pick_branch_var(
   model : Model,
   primal : Array[Double],
   int_tol : Double,
-) -> Int {
+) -> Int32 {
   let mut best_idx = -1
   let mut best_frac = 0.0
   for j = 0; j < model.vars.length(); j = j + 1 {
@@ -32,7 +32,7 @@ fn pick_branch_var(
       continue
     }
     let val = primal[j]
-    let rounded = val.round()
+    let rounded = d_round(val)
     let dist = (val - rounded).abs()
     if dist > int_tol && dist > best_frac {
       best_frac = dist
@@ -66,7 +66,7 @@ fn pop_best_node(queue : Array[BBNode]) -> BBNode {
 /// Solve a Mixed-Integer Linear Program using Best-First Branch-and-Bound.
 pub fn solve_milp(
   model : Model,
-  config? : SolverConfig = SolverConfig::default(),
+  config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
   let sense_sign = match model.sense {
     Minimize => 1.0
@@ -79,16 +79,12 @@ pub fn solve_milp(
     let v = model.vars[j]
     match v.kind {
       Binary => {
-        root_lbs.push(if v.lb > 0.0 { v.lb.ceil() } else { 0.0 })
-        root_ubs.push(if v.ub < 1.0 { v.ub.floor() } else { 1.0 })
+        root_lbs.push(if v.lb > 0.0 { d_ceil(v.lb) } else { 0.0 })
+        root_ubs.push(if v.ub < 1.0 { d_floor(v.ub) } else { 1.0 })
       }
       Integer => {
-        root_lbs.push(
-          if v.lb > -1.0e200 { v.lb.ceil() } else { v.lb },
-        )
-        root_ubs.push(
-          if v.ub < 1.0e200 { v.ub.floor() } else { v.ub },
-        )
+        root_lbs.push(if v.lb > -1.0e200 { d_ceil(v.lb) } else { v.lb })
+        root_ubs.push(if v.ub < 1.0e200 { d_floor(v.ub) } else { v.ub })
       }
       Continuous => {
         root_lbs.push(v.lb)
@@ -98,7 +94,7 @@ pub fn solve_milp(
   }
 
   let queue : Array[BBNode] = [
-    { lbs: root_lbs, ubs: root_ubs, bound: -1.0e308 },
+    { lbs: root_lbs, ubs: root_ubs, bound: -1.0e308, },
   ]
   let mut best_min_obj = 1.0e308
   let mut best_sol : Solution? = None
@@ -139,7 +135,7 @@ pub fn solve_milp(
           let snapped : Array[Double] = []
           for j = 0; j < n; j = j + 1 {
             if is_integer_var(model.vars[j].kind) {
-              snapped.push(lp_sol.primal[j].round())
+              snapped.push(d_round(lp_sol.primal[j]))
             } else {
               snapped.push(lp_sol.primal[j])
             }
@@ -163,20 +159,20 @@ pub fn solve_milp(
         } else {
           // Branch on x[branch_idx] <= floor(val) and x[branch_idx] >= ceil(val)
           let val = lp_sol.primal[branch_idx]
-          let fl = val.floor()
-          let cl = val.ceil()
+          let fl = d_floor(val)
+          let cl = d_ceil(val)
 
           if fl >= node.lbs[branch_idx] - config.tol {
             let left_lbs = node.lbs.copy()
             let left_ubs = node.ubs.copy()
             left_ubs[branch_idx] = fl
-            queue.push({ lbs: left_lbs, ubs: left_ubs, bound: min_obj })
+            queue.push({ lbs: left_lbs, ubs: left_ubs, bound: min_obj, })
           }
           if cl <= node.ubs[branch_idx] + config.tol {
             let right_lbs = node.lbs.copy()
             let right_ubs = node.ubs.copy()
             right_lbs[branch_idx] = cl
-            queue.push({ lbs: right_lbs, ubs: right_ubs, bound: min_obj })
+            queue.push({ lbs: right_lbs, ubs: right_ubs, bound: min_obj, })
           }
         }
       }
@@ -184,9 +180,9 @@ pub fn solve_milp(
   }
 
   match best_sol {
-    Some(sol) => {
+    Some(sol) =>
       if queue.length() == 0 {
-        { ..sol, iterations: total_iters, nodes_explored, mip_gap: 0.0 }
+        { ..sol, iterations: total_iters, nodes_explored, mip_gap: 0.0, }
       } else {
         // Compute remaining best lower bound gap if node limit reached
         let mut best_rem = queue[0].bound
@@ -203,13 +199,16 @@ pub fn solve_milp(
         let gap = (best_min_obj - best_rem).abs() / denom
         {
           ..sol,
-          status: if gap <= config.mip_gap_tol { Optimal } else { NodeLimit },
+          status: if gap <= config.mip_gap_tol {
+            Optimal
+          } else {
+            NodeLimit
+          },
           iterations: total_iters,
           nodes_explored,
           mip_gap: gap,
         }
       }
-    }
     None =>
       if hit_unbounded {
         Solution::empty(Unbounded, total_iters, nodes_explored)

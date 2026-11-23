@@ -9,21 +9,21 @@
 let inf_threshold : Double = 1.0e200
 
 ///|
-enum VarMapping {
-  Shifted(Int, Double) // x = u + lb
-  NegShifted(Int, Double) // x = ub - v
-  Free(Int, Int) // x = u_pos - u_neg
+priv enum VarMapping {
+  Shifted(Int32, Double) // x = u + lb
+  NegShifted(Int32, Double) // x = ub - v
+  Free(Int32, Int32) // x = u_pos - u_neg
   Fixed(Double) // x = lb == ub
 }
 
 ///|
 fn pivot_tableau(
   tab : Array[Array[Double]],
-  basis : Array[Int],
-  m : Int,
-  rhs_col : Int,
-  pivot_row : Int,
-  pivot_col : Int,
+  basis : Array[Int32],
+  m : Int32,
+  rhs_col : Int32,
+  pivot_row : Int32,
+  pivot_col : Int32,
 ) -> Unit {
   let pv = tab[pivot_row][pivot_col]
   let inv_pv = 1.0 / pv
@@ -53,12 +53,12 @@ fn pivot_tableau(
 /// Returns (status, iterations_used).
 fn run_simplex_phase(
   tab : Array[Array[Double]],
-  basis : Array[Int],
+  basis : Array[Int32],
   col_active : Array[Bool],
-  m : Int,
-  num_cols : Int,
+  m : Int32,
+  num_cols : Int32,
   config : SolverConfig,
-) -> (Status, Int) {
+) -> (Status, Int32) {
   let rhs_col = num_cols
   let mut iters = 0
   let mut stall_count = 0
@@ -138,7 +138,7 @@ fn run_simplex_phase(
 /// Solve the LP relaxation of a Model using the Two-Phase Simplex Method.
 pub fn solve_lp(
   model : Model,
-  config? : SolverConfig = SolverConfig::default(),
+  config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
   let n_orig = model.vars.length()
   let m_user = model.constraints.length()
@@ -151,7 +151,7 @@ pub fn solve_lp(
   let mappings : Array[VarMapping] = []
   let std_obj : Array[Double] = []
   let mut obj_offset = model.obj_constant * sense_sign
-  let ub_rows : Array[(Int, Double)] = [] // (std_col, upper_bound_delta)
+  let ub_rows : Array[(Int32, Double)] = [] // (std_col, upper_bound_delta)
 
   for j = 0; j < n_orig; j = j + 1 {
     let v = model.vars[j]
@@ -281,9 +281,9 @@ pub fn solve_lp(
 
   // Step 3: Allocate slack, surplus, and artificial columns
   let mut next_col = n_std
-  let row_slack_col : Array[Int] = Array::make(m_total, -1)
-  let row_art_col : Array[Int] = Array::make(m_total, -1)
-  let init_unit_col : Array[Int] = Array::make(m_total, -1)
+  let row_slack_col : Array[Int32] = Array::make(m_total, -1)
+  let row_art_col : Array[Int32] = Array::make(m_total, -1)
+  let init_unit_col : Array[Int32] = Array::make(m_total, -1)
   let is_artificial : Array[Bool] = Array::make(n_std, false)
 
   for i = 0; i < m_total; i = i + 1 {
@@ -315,7 +315,7 @@ pub fn solve_lp(
   let num_cols = next_col
   let rhs_col = num_cols
   let tab : Array[Array[Double]] = []
-  let basis : Array[Int] = Array::make(m_total, -1)
+  let basis : Array[Int32] = Array::make(m_total, -1)
   let mut has_art = false
 
   for i = 0; i < m_total; i = i + 1 {

@@ -2,25 +2,26 @@
 /// Algebraic LP/MILP Model builder and solution verifier.
 
 ///|
+#derive(Debug)
 pub struct Model {
   mut sense : Sense
   vars : Array[VarSpec]
   constraints : Array[Constraint]
   mut obj_constant : Double
-} derive(Show)
-
-///|
-pub fn Model::new(sense : Sense) -> Model {
-  { sense, vars: [], constraints: [], obj_constant: 0.0 }
 }
 
 ///|
-pub fn Model::num_vars(self : Model) -> Int {
+pub fn Model::new(sense : Sense) -> Model {
+  { sense, vars: [], constraints: [], obj_constant: 0.0, }
+}
+
+///|
+pub fn Model::num_vars(self : Model) -> Int32 {
   self.vars.length()
 }
 
 ///|
-pub fn Model::num_constraints(self : Model) -> Int {
+pub fn Model::num_constraints(self : Model) -> Int32 {
   self.constraints.length()
 }
 
@@ -39,10 +40,10 @@ pub fn Model::set_obj_constant(self : Model, c : Double) -> Unit {
 pub fn Model::add_var(
   self : Model,
   name : String,
-  lb? : Double = 0.0,
-  ub? : Double = 1.0e300,
-  kind? : VarKind = Continuous,
-  obj? : Double = 0.0,
+  lb~ : Double = 0.0,
+  ub~ : Double = 1.0e300,
+  kind~ : VarKind = Continuous,
+  obj~ : Double = 0.0,
 ) -> VarId {
   let idx = self.vars.length()
   let eff_lb = match kind {
@@ -53,17 +54,17 @@ pub fn Model::add_var(
     Binary => if ub > 1.0 { 1.0 } else { ub }
     _ => ub
   }
-  self.vars.push({ name, lb: eff_lb, ub: eff_ub, kind, obj })
-  { index: idx }
+  self.vars.push({ name, lb: eff_lb, ub: eff_ub, kind, obj, })
+  { index: idx, }
 }
 
 ///|
 pub fn Model::add_continuous_var(
   self : Model,
   name : String,
-  lb? : Double = 0.0,
-  ub? : Double = 1.0e300,
-  obj? : Double = 0.0,
+  lb~ : Double = 0.0,
+  ub~ : Double = 1.0e300,
+  obj~ : Double = 0.0,
 ) -> VarId {
   self.add_var(name, lb~, ub~, kind=Continuous, obj~)
 }
@@ -72,9 +73,9 @@ pub fn Model::add_continuous_var(
 pub fn Model::add_int_var(
   self : Model,
   name : String,
-  lb? : Double = 0.0,
-  ub? : Double = 1.0e300,
-  obj? : Double = 0.0,
+  lb~ : Double = 0.0,
+  ub~ : Double = 1.0e300,
+  obj~ : Double = 0.0,
 ) -> VarId {
   self.add_var(name, lb~, ub~, kind=Integer, obj~)
 }
@@ -83,7 +84,7 @@ pub fn Model::add_int_var(
 pub fn Model::add_binary_var(
   self : Model,
   name : String,
-  obj? : Double = 0.0,
+  obj~ : Double = 0.0,
 ) -> VarId {
   self.add_var(name, lb=0.0, ub=1.0, kind=Binary, obj~)
 }
@@ -91,7 +92,7 @@ pub fn Model::add_binary_var(
 ///|
 pub fn Model::set_var_obj(self : Model, v : VarId, coeff : Double) -> Unit {
   let old = self.vars[v.index]
-  self.vars[v.index] = { ..old, obj: coeff }
+  self.vars[v.index] = { ..old, obj: coeff, }
 }
 
 ///|
@@ -102,19 +103,19 @@ pub fn Model::set_var_bounds(
   ub : Double,
 ) -> Unit {
   let old = self.vars[v.index]
-  self.vars[v.index] = { ..old, lb, ub }
+  self.vars[v.index] = { ..old, lb, ub, }
 }
 
 ///|
 pub fn Model::set_objective(self : Model, expr : LinearExpr) -> Unit {
   for i = 0; i < self.vars.length(); i = i + 1 {
     let old = self.vars[i]
-    self.vars[i] = { ..old, obj: 0.0 }
+    self.vars[i] = { ..old, obj: 0.0, }
   }
   for i = 0; i < expr.terms.length(); i = i + 1 {
     let t = expr.terms[i]
     let old = self.vars[t.var_id.index]
-    self.vars[t.var_id.index] = { ..old, obj: old.obj + t.coeff }
+    self.vars[t.var_id.index] = { ..old, obj: old.obj + t.coeff, }
   }
   self.obj_constant = expr.constant
 }
@@ -127,7 +128,7 @@ pub fn Model::add_constraint(
   relation : Relation,
   rhs : Double,
 ) -> Unit {
-  self.constraints.push({ name, terms, relation, rhs })
+  self.constraints.push({ name, terms, relation, rhs, })
 }
 
 ///|
@@ -167,7 +168,7 @@ pub fn Model::clone_with_bounds(
   let new_vars : Array[VarSpec] = []
   for i = 0; i < self.vars.length(); i = i + 1 {
     let v = self.vars[i]
-    new_vars.push({ ..v, lb: lbs[i], ub: ubs[i] })
+    new_vars.push({ ..v, lb: lbs[i], ub: ubs[i], })
   }
   {
     sense: self.sense,
@@ -182,7 +183,7 @@ pub fn Model::clone_with_bounds(
 pub fn Model::verify_solution(
   self : Model,
   sol : Solution,
-  tol? : Double = 1.0e-5,
+  tol~ : Double = 1.0e-5,
 ) -> Bool {
   if sol.status != Optimal {
     return false
@@ -200,7 +201,7 @@ pub fn Model::verify_solution(
     match v.kind {
       Continuous => ()
       Integer | Binary => {
-        let rounded = x.round()
+        let rounded = d_round(x)
         if (x - rounded).abs() > tol {
           return false
         }
@@ -231,11 +232,11 @@ pub fn Model::verify_solution(
 /// High-level entry point: automatically dispatches to LP Simplex or MILP Branch-and-Bound.
 pub fn Model::solve(
   self : Model,
-  config? : SolverConfig = SolverConfig::default(),
+  config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
   if self.has_integer_vars() {
-    solve_milp(self, config)
+    solve_milp(self, config~)
   } else {
-    solve_lp(self, config)
+    solve_lp(self, config~)
   }
 }

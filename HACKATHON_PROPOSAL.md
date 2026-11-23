@@ -11,19 +11,21 @@
 **新项目方向 — 开源基础工具库 / 科学计算与运筹优化**
 
 ### 3. 项目定位与生态空白分析
-经检索 `mooncakes.io` 现有生态：
-- MoonBit 社区目前已拥有较完善的线性代数基础库（如 `moonmcl`、`Luna-Flow/linear-algebra`）、SAT 求解器（`moonbit-sat`）、向量与全文检索引擎（`moonhnsw`、`moonseek`）与策略引擎（`moonrego`、`moon_cel`）。
-- 但**独立的运筹优化求解器（Linear Programming / Mixed-Integer Linear Programming）在 `mooncakes.io` 上尚属空白**（类似 Rust 生态中的 `microlp` / `good_lp` / `highs`）。
-- 借助 MoonBit 编译到 Wasm / JS / Native 的极小体积与高性能优势，一个零外部依赖的纯 MoonBit LP/MILP 求解器可直接运行在浏览器端、边缘节点与服务端，服务于排班调度、资源分配、路径规划、组合优化、游戏数值平衡与编译器寄存器分配等真实工业场景。
+经检索 `mooncakes.io` 现有包生态：
+- MoonBit 社区已具备线性代数基础库（`moonmcl`、`Luna-Flow/linear-algebra`）、SAT 求解器（`moonbit-sat`）、向量与全文检索引擎（`moonhnsw`、`moonseek`）与策略引擎（`moonrego`、`moon_cel`）。
+- 但**独立的运筹优化求解器（Linear Programming / Mixed-Integer Linear Programming）目前在 `mooncakes.io` 上仍属空白**（类似 Rust 生态的 `microlp` / `good_lp` / `highs`）。
+- 依托 MoonBit 编译至 Wasm / JS / Native 的极小产物与高性能优势，零外部依赖的 `moonlp` 可直接部署于浏览器、边缘节点与服务端，服务于排班调度、供应链排产、网络流优化、组合指派、游戏数值平衡与编译器寄存器分配等真实工程场景。
 
-### 4. 核心技术方案与交付内容
-1. **类型安全代数建模 DSL**：支持 `Minimize`/`Maximize`、连续/整数/二值变量、任意上下界与自由变量、独立可行性与目标函数验证器。
-2. **Two-Phase Simplex 核心引擎**：标准型自动变换 + Phase I/II 两阶段单纯形法 + Dantzig 选元与 Bland 防退化循环规则，输出精确原始解、对偶影子价格（Shadow Prices）与检验数。
-3. **Best-Bound Branch-and-Bound MILP 引擎**：支持二值/一般整数/连续混合规划、最分数变量分支、边界剪枝与可证明的 MIP Gap 报告。
-4. **工业标准互操作**：支持 CPLEX `.lp` 格式导出（后续迭代完整 `.lp`/`.mps` 解析器、Dual Simplex 热启动与 Gomory 割平面）。
-5. **全量客观数学验证集**：覆盖强对偶校验（$c^T x = b^T y$）、Beale 1955 退化循环 LP、Klee-Minty 4D 立方体、0-1 背包、指派问题、设施选址等 11+ 经典算例。
+### 4. 核心技术方案与已验收成果（v0.2.0）
+本项目全部采用纯 MoonBit 1.0 实现（零外部依赖，`moon check` 0 error 0 warning，`moon test` 20/20 全绿）：
+1. **类型安全代数建模 DSL**：支持 `Minimize`/`Maximize`、连续/一般整数/0-1 二值变量、任意上下界与自由变量、内置独立可行性校验器。
+2. **Two-Phase Simplex 核心引擎**：标准型自动变换 + Phase I/II 两阶段单纯形法 + Dantzig 选元与 **Bland 防退化循环规则**，精确输出原始解、对偶影子价格与检验数。
+3. **Best-Bound Branch-and-Bound MILP 引擎**：支持二值/整数/连续混合规划、最分数分支、界剪枝与 MIP Gap 计算。
+4. **Presolve 预处理器 + 可机检 KKT 强对偶证明器**：自动收紧单变量约束界并消除冗余行；对 LP 最优解独立校验互补松弛与强对偶间隙 $|c^T x - b^T y|$。
+5. **双工业标准格式解析与导出**：完整支持 **CPLEX `.lp` 解析/导出** 与 **Netlib/MIPLIB `.mps` 解析**（含 `INTORG`/`INTEND` 整数段）。
+6. **20 项客观测试集与可运行 CLI 示例**：涵盖 Beale 1955 退化循环 LP、Klee-Minty 4D 压测、CLRS 网络最大流、供应链排产、0-1 背包、设施选址、64 变量 4×4 数独 MILP 实时求解演示（`moon run src/examples` 76 次旋转秒解）。
 
-### 5. 里程碑计划
-- **M1（已完成核心原型）**：完成 DSL、Two-Phase Simplex + Bland 规则、Branch-and-Bound MILP、CPLEX `.lp` 导出器及 11 个经典数学算例全量通过。
-- **M2（11月底验收版）**：在本地 MoonBit 工具链完成 `moon check` / `moon test` / `moon bench` 全绿验证，补充 Dual Simplex 热启动、CPLEX `.lp` 解析器、完整文档与多场景 Example，发布至 GitHub 与 `mooncakes.io`。
-- **M3（季度赛冲刺版）**：引入稀疏矩阵 LU 分解（Forrest-Tomlin 更新）、Gomory 割平面与 Netlib 标准测试集基准跑分。
+### 5. 后续迭代计划（冲刺季度赛）
+- 实现 Dual Simplex 热启动，显著加速大规模 MILP 分支定界子节点重优化。
+- 引入稀疏矩阵 LU 分解与 Gomory 分数割平面（Cutting Planes）。
+- 对接 Netlib LP 公开算例集补充 `moon bench` 跨后端（Wasm / JS / Native）性能基准并发布至 `mooncakes.io`。
