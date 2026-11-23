@@ -801,3 +801,62 @@ test "23. variable reduced-cost and bound-activity sensitivity analysis" {
   assert_approx(vs[0].reduced_cost, 0.0, 1.0e-6)
   assert_true(vs[1].reduced_cost > 0.0)
 }
+
+///|
+test "24. 10-item 0-1 Knapsack MILP multi-level Branch-and-Bound stress test" {
+  // Exact DP optimum = 77
+  let vals = [15.0, 22.0, 14.0, 26.0, 32.0, 9.0, 16.0, 8.0, 25.0, 19.0]
+  let wts = [4.0, 7.0, 5.0, 8.0, 10.0, 3.0, 5.0, 2.0, 8.0, 6.0]
+  let m = Model::new(Maximize)
+  let terms : Array[Term] = []
+  for i = 0; i < 10; i = i + 1 {
+    let v = m.add_binary_var("k_" + i.to_string(), obj=vals[i])
+    terms.push({ var_id: v, coeff: wts[i], })
+  }
+  m.add_constraint("cap", terms, Le, 23.0)
+
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol))
+  assert_approx(sol.objective, 77.0, 1.0e-6)
+}
+
+///|
+test "25. LP blending & linear expression builder (LinearExpr) end-to-end" {
+  // Blend two alloys x, y to meet total weight = 100, min grade >= 45%, max impurity <= 12%
+  // Alloy A: cost 4/kg, grade 60%, impurity 10%
+  // Alloy B: cost 2.5/kg, grade 30%, impurity 15%
+  // From grade: 0.6x + 0.3(100-x) >= 45 => 0.3x >= 15 => x >= 50
+  // From impurity: 0.1x + 0.15(100-x) <= 12 => -0.05x <= -3 => x >= 60
+  // Optimal: x = 60, y = 40 -> cost = 60*4 + 40*2.5 = 340
+  let m = Model::new(Minimize)
+  let x = m.add_continuous_var("alloy_A")
+  let y = m.add_continuous_var("alloy_B")
+  let obj_expr = LinearExpr::from_var(x, coeff=4.0).add_term(y, 2.5)
+  m.set_objective(obj_expr)
+  m.add_expr_constraint(
+    "total_mass",
+    LinearExpr::from_var(x).add_term(y, 1.0),
+    Eq,
+    100.0,
+  )
+  m.add_expr_constraint(
+    "min_grade",
+    LinearExpr::from_var(x, coeff=0.6).add_term(y, 0.3),
+    Ge,
+    45.0,
+  )
+  m.add_expr_constraint(
+    "max_impurity",
+    LinearExpr::from_var(x, coeff=0.1).add_term(y, 0.15),
+    Le,
+    12.0,
+  )
+
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol))
+  assert_approx(sol.primal[x.index], 60.0, 1.0e-6)
+  assert_approx(sol.primal[y.index], 40.0, 1.0e-6)
+  assert_approx(sol.objective, 340.0, 1.0e-6)
+}

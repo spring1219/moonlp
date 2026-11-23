@@ -23,7 +23,9 @@
   - 独立校验原始可行性误差、互补松弛误差 $|y_i(a_i^T x - b_i)|$ 与强对偶间隙 $|c^T x - b^T y|$。
 - **双工业标准文件格式支持** (`src/lp_format.mbt`, `src/mps_format.mbt`)
   - **CPLEX `.lp`**：支持完整双向解析 (`parse_lp`) 与导出 (`to_lp_string`)。
-  - **Netlib / MIPLIB `.mps`**：支持完整解析 (`parse_mps`)，含 `N/L/G/E` 行、`LO/UP/FX/FR/BV/LI/UI` 边界与 `'MARKER' 'INTORG'/'INTEND'` 整数段。
+  - **Netlib / MIPLIB `.mps`**：支持完整双向解析 (`parse_mps`) 与导出 (`to_mps_string`)，含 `N/L/G/E` 行、`LO/UP/FX/FR/BV/LI/UI` 边界与 `'MARKER' 'INTORG'/'INTEND'` 整数段。
+- **后验灵敏度分析** (`src/sensitivity.mbt`)
+  - 支持约束紧致度/松弛量/影子价格分析 (`analyze_constraints`)、变量界活跃度与检验数分析 (`analyze_variables`) 及 RHS 扰动重算 (`rhs_perturbation_delta`)。
 
 ---
 
