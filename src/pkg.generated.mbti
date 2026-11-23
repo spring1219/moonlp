@@ -1,0 +1,168 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "moonlp/moonlp"
+
+import {
+  "moonbitlang/core/debug",
+}
+
+// Values
+pub fn parse_lp(String) -> Model raise ParseError
+
+pub fn parse_mps(String, sense? : Sense) -> Model raise ParseError
+
+pub fn solve_lp(Model, config? : SolverConfig) -> Solution
+
+pub fn solve_milp(Model, config? : SolverConfig) -> Solution
+
+// Errors
+#derive(Eq, @debug.Debug)
+pub suberror ParseError {
+  ParseError(String)
+}
+
+// Types and methods
+#derive(@debug.Debug)
+pub(all) struct Constraint {
+  name : String
+  terms : Array[Term]
+  relation : Relation
+  rhs : Double
+}
+
+#derive(@debug.Debug)
+pub struct LinearExpr {
+  terms : Array[Term]
+  mut constant : Double
+}
+pub fn LinearExpr::add_const(Self, Double) -> Self
+pub fn LinearExpr::add_expr(Self, Self) -> Self
+pub fn LinearExpr::add_term(Self, VarId, Double) -> Self
+pub fn LinearExpr::from_var(VarId, coeff? : Double) -> Self
+pub fn LinearExpr::scale(Self, Double) -> Self
+pub fn LinearExpr::sub_expr(Self, Self) -> Self
+pub fn LinearExpr::zero() -> Self
+
+#derive(@debug.Debug)
+pub struct Model {
+  mut sense : Sense
+  vars : Array[VarSpec]
+  constraints : Array[Constraint]
+  mut obj_constant : Double
+}
+pub fn Model::add_binary_var(Self, String, obj? : Double) -> VarId
+pub fn Model::add_constraint(Self, String, Array[Term], Relation, Double) -> Unit
+pub fn Model::add_continuous_var(Self, String, lb? : Double, ub? : Double, obj? : Double) -> VarId
+pub fn Model::add_expr_constraint(Self, String, LinearExpr, Relation, Double) -> Unit
+pub fn Model::add_int_var(Self, String, lb? : Double, ub? : Double, obj? : Double) -> VarId
+pub fn Model::add_var(Self, String, lb? : Double, ub? : Double, kind? : VarKind, obj? : Double) -> VarId
+pub fn Model::certify_lp_solution(Self, Solution, tol? : Double) -> OptimalityCertificate
+pub fn Model::clone_with_bounds(Self, Array[Double], Array[Double]) -> Self
+pub fn Model::has_integer_vars(Self) -> Bool
+pub fn Model::new(Sense) -> Self
+pub fn Model::num_constraints(Self) -> Int32
+pub fn Model::num_vars(Self) -> Int32
+pub fn Model::presolve(Self, tol? : Double) -> (Self, PresolveReport)
+pub fn Model::set_obj_constant(Self, Double) -> Unit
+pub fn Model::set_objective(Self, LinearExpr) -> Unit
+pub fn Model::set_sense(Self, Sense) -> Unit
+pub fn Model::set_var_bounds(Self, VarId, Double, Double) -> Unit
+pub fn Model::set_var_obj(Self, VarId, Double) -> Unit
+pub fn Model::solve(Self, config? : SolverConfig) -> Solution
+pub fn Model::solve_presolved(Self, config? : SolverConfig) -> Solution
+pub fn Model::to_lp_string(Self) -> String
+pub fn Model::verify_solution(Self, Solution, tol? : Double) -> Bool
+
+#derive(@debug.Debug)
+pub(all) struct OptimalityCertificate {
+  primal_feasible : Bool
+  max_primal_violation : Double
+  max_complementarity_error : Double
+  primal_objective : Double
+  dual_objective : Double
+  duality_gap : Double
+  certified_optimal : Bool
+}
+
+#derive(@debug.Debug)
+pub(all) struct PresolveReport {
+  bounds_tightened : Int32
+  redundant_rows_removed : Int32
+  infeasible_detected : Bool
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum Relation {
+  Le
+  Ge
+  Eq
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum Sense {
+  Minimize
+  Maximize
+}
+
+#derive(@debug.Debug)
+pub(all) struct Solution {
+  status : Status
+  objective : Double
+  primal : Array[Double]
+  dual : Array[Double]
+  reduced_costs : Array[Double]
+  iterations : Int32
+  nodes_explored : Int32
+  mip_gap : Double
+}
+pub fn Solution::empty(Status, Int32, Int32) -> Self
+
+#derive(@debug.Debug)
+pub(all) struct SolverConfig {
+  tol : Double
+  int_tol : Double
+  max_iters : Int32
+  max_nodes : Int32
+  mip_gap_tol : Double
+  bland_stall_limit : Int32
+}
+pub fn SolverConfig::default() -> Self
+
+#derive(Eq, @debug.Debug)
+pub(all) enum Status {
+  Optimal
+  Infeasible
+  Unbounded
+  MaxIterations
+  NodeLimit
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Term {
+  var_id : VarId
+  coeff : Double
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct VarId {
+  index : Int32
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum VarKind {
+  Continuous
+  Integer
+  Binary
+}
+
+#derive(@debug.Debug)
+pub(all) struct VarSpec {
+  name : String
+  lb : Double
+  ub : Double
+  kind : VarKind
+  obj : Double
+}
+
+// Type aliases
+
+// Traits
