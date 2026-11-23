@@ -1,10 +1,10 @@
-name = "moonlp/moonlp"
+name = "spring1219/moonlp"
 
 version = "0.2.0"
 
 readme = "README.md"
 
-repository = ""
+repository = "https://github.com/spring1219/moonlp"
 
 license = "Apache-2.0"
 
