@@ -737,3 +737,67 @@ test "21. Netlib MPS export -> parse_mps -> solve round-trip (LP & MILP)" {
   assert_true(parsed.verify_solution(sol2))
   assert_approx(sol2.objective, sol1.objective, 1.0e-6)
 }
+
+///|
+test "22. post-optimality constraint sensitivity & exact shadow price perturbation" {
+  // Maximize 3*x + 2*y s.t. x + y <= 4, 2*x + y <= 5, x <= 10 (non-binding)
+  // Optimum: x=1, y=3, obj=9; shadow prices: labor=1, machine=1, cap=0
+  let m = Model::new(Maximize)
+  let x = m.add_continuous_var("x", obj=3.0)
+  let y = m.add_continuous_var("y", obj=2.0)
+  m.add_constraint(
+    "labor",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 1.0, }],
+    Le,
+    4.0,
+  )
+  m.add_constraint(
+    "machine",
+    [{ var_id: x, coeff: 2.0, }, { var_id: y, coeff: 1.0, }],
+    Le,
+    5.0,
+  )
+  m.add_constraint("extra_cap", [{ var_id: x, coeff: 1.0, }], Le, 10.0)
+
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  let cs = m.analyze_constraints(sol)
+  assert_eq(cs.length(), 3)
+  assert_true(cs[0].binding)
+  assert_true(cs[1].binding)
+  assert_true(!cs[2].binding)
+  assert_approx(cs[2].slack, 9.0, 1.0e-6)
+  assert_approx(cs[2].shadow_price, 0.0, 1.0e-6)
+
+  // Perturbing labor RHS by +0.5 must increase objective by shadow_price * 0.5 = +0.5
+  match m.rhs_perturbation_delta(sol, 0, 0.5) {
+    Some(d) => assert_approx(d, 0.5, 1.0e-6)
+    None => fail("Expected optimal perturbed LP")
+  }
+}
+
+///|
+test "23. variable reduced-cost and bound-activity sensitivity analysis" {
+  let m = Model::new(Minimize)
+  let x1 = m.add_continuous_var("x1", obj=0.6)
+  let x2 = m.add_continuous_var("x2", obj=0.35)
+  m.add_constraint(
+    "vitA",
+    [{ var_id: x1, coeff: 5.0, }, { var_id: x2, coeff: 7.0, }],
+    Ge,
+    8.0,
+  )
+  m.add_constraint(
+    "vitB",
+    [{ var_id: x1, coeff: 4.0, }, { var_id: x2, coeff: 2.0, }],
+    Ge,
+    15.0,
+  )
+  let sol = m.solve()
+  let vs = m.analyze_variables(sol)
+  assert_eq(vs.length(), 2)
+  assert_true(!vs[0].at_lower_bound)
+  assert_true(vs[1].at_lower_bound)
+  assert_approx(vs[0].reduced_cost, 0.0, 1.0e-6)
+  assert_true(vs[1].reduced_cost > 0.0)
+}
