@@ -10,31 +10,32 @@ pub(all) struct PresolveReport {
 }
 
 ///|
-priv struct RemovedSingleton {
-  orig_idx : Int32
-  var_idx : Int32
-  coeff : Double
-  eff_rel : Relation
-  bound_val : Double
-}
-
-///|
 fn Model::presolve_with_map(
   self : Model,
   tol : Double,
-) -> (Model, PresolveReport, Array[Int32], Array[RemovedSingleton]) {
+) -> (
+  Model,
+  PresolveReport,
+  Array[Int32],
+  Array[(Int32, Double)],
+  Array[(Int32, Double)],
+) {
+  let n_vars = self.vars.length()
   let new_vars : Array[VarSpec] = []
-  for i = 0; i < self.vars.length(); i = i + 1 {
+  let lb_source : Array[(Int32, Double)] = []
+  let ub_source : Array[(Int32, Double)] = []
+  for i = 0; i < n_vars; i = i + 1 {
     new_vars.push(self.vars[i])
+    lb_source.push((-1, 0.0))
+    ub_source.push((-1, 0.0))
   }
   let mut tightened = 0
   let mut removed = 0
   let kept_constraints : Array[Constraint] = []
   let kept_orig_indices : Array[Int32] = []
-  let removed_singletons : Array[RemovedSingleton] = []
 
   // First check existing bounds
-  for i = 0; i < new_vars.length(); i = i + 1 {
+  for i = 0; i < n_vars; i = i + 1 {
     let v = new_vars[i]
     if v.lb > v.ub + tol {
       return (
@@ -45,20 +46,21 @@ fn Model::presolve_with_map(
           infeasible_detected: true,
         },
         kept_orig_indices,
-        removed_singletons,
+        lb_source,
+        ub_source,
       )
     }
   }
 
   for c_idx = 0; c_idx < self.constraints.length(); c_idx = c_idx + 1 {
     let c = self.constraints[c_idx]
-    // Aggregate duplicate terms in the row
+    // Aggregate duplicate terms in the row without discarding small nonzero coefficients!
     let mut nonzeros = 0
     let mut single_var = -1
     let mut single_coeff = 0.0
     for j = 0; j < c.terms.length(); j = j + 1 {
       let t = c.terms[j]
-      if t.coeff.abs() > tol {
+      if t.coeff != 0.0 {
         if single_var == -1 || single_var == t.var_id.index {
           single_var = t.var_id.index
           single_coeff = single_coeff + t.coeff
@@ -70,7 +72,7 @@ fn Model::presolve_with_map(
       }
     }
 
-    if nonzeros == 0 {
+    if nonzeros == 0 || (nonzeros == 1 && single_coeff == 0.0) {
       // Constant row: 0 <= / >= / == rhs
       let ok = match c.relation {
         Le => 0.0 <= c.rhs + tol
@@ -86,16 +88,22 @@ fn Model::presolve_with_map(
             infeasible_detected: true,
           },
           kept_orig_indices,
-          removed_singletons,
+          lb_source,
+          ub_source,
         )
       }
       removed = removed + 1
       continue
     }
 
-    if nonzeros == 1 && single_coeff.abs() > tol {
+    if nonzeros == 1 && single_coeff.abs() > 1.0e-30 {
       let v = new_vars[single_var]
       let bound_val = c.rhs / single_coeff
+      if !is_finite_double(bound_val) {
+        kept_constraints.push(c)
+        kept_orig_indices.push(c_idx)
+        continue
+      }
       let mut new_lb = v.lb
       let mut new_ub = v.ub
       let eff_rel = if single_coeff > 0.0 {
@@ -108,14 +116,24 @@ fn Model::presolve_with_map(
         }
       }
       match eff_rel {
-        Le => if bound_val < new_ub { new_ub = bound_val }
-        Ge => if bound_val > new_lb { new_lb = bound_val }
+        Le =>
+          if bound_val < new_ub {
+            new_ub = bound_val
+            ub_source[single_var] = (c_idx, single_coeff)
+          }
+        Ge =>
+          if bound_val > new_lb {
+            new_lb = bound_val
+            lb_source[single_var] = (c_idx, single_coeff)
+          }
         Eq => {
           if bound_val > new_lb {
             new_lb = bound_val
+            lb_source[single_var] = (c_idx, single_coeff)
           }
           if bound_val < new_ub {
             new_ub = bound_val
+            ub_source[single_var] = (c_idx, single_coeff)
           }
         }
       }
@@ -144,16 +162,10 @@ fn Model::presolve_with_map(
             infeasible_detected: true,
           },
           kept_orig_indices,
-          removed_singletons,
+          lb_source,
+          ub_source,
         )
       }
-      removed_singletons.push({
-        orig_idx: c_idx,
-        var_idx: single_var,
-        coeff: single_coeff,
-        eff_rel,
-        bound_val,
-      })
       removed = removed + 1
     } else {
       kept_constraints.push(c)
@@ -174,7 +186,8 @@ fn Model::presolve_with_map(
       infeasible_detected: false,
     },
     kept_orig_indices,
-    removed_singletons,
+    lb_source,
+    ub_source,
   )
 }
 
@@ -185,18 +198,18 @@ pub fn Model::presolve(
   self : Model,
   tol~ : Double = 1.0e-9,
 ) -> (Model, PresolveReport) {
-  let (reduced, report, _, _) = self.presolve_with_map(tol)
+  let (reduced, report, _, _, _) = self.presolve_with_map(tol)
   (reduced, report)
 }
 
 ///|
 /// Solve a Model after applying Presolve bound tightening & redundant-row elimination,
-/// recovering original-space dual shadow prices and reduced costs for LP models.
+/// recovering exact original-space dual shadow prices and reduced costs for LP models.
 pub fn Model::solve_presolved(
   self : Model,
   config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
-  let (reduced, report, kept_orig_indices, removed_singletons) = self.presolve_with_map(
+  let (reduced, report, kept_orig_indices, lb_source, ub_source) = self.presolve_with_map(
     config.tol,
   )
   if report.infeasible_detected {
@@ -209,7 +222,7 @@ pub fn Model::solve_presolved(
     return rsol
   }
 
-  // Postsolve: map kept constraint duals back to original indices & recover singleton duals
+  // Postsolve: map kept constraint duals back to original indices & assign exact singleton sources
   let m_orig = self.constraints.length()
   let n_orig = self.vars.length()
   let orig_dual = Array::make(m_orig, 0.0)
@@ -237,32 +250,18 @@ pub fn Model::solve_presolved(
   let orig_rc = Array::make(n_orig, 0.0)
   for j = 0; j < n_orig; j = j + 1 {
     let s_j = sense_sign * (self.vars[j].obj - at_y[j])
-    let orig_v = self.vars[j]
-    let red_v = reduced.vars[j]
     let mut absorbed = false
-    if s_j > config.tol && red_v.lb > orig_v.lb + config.tol {
-      let btol = 1.0e-7 * (1.0 + red_v.lb.abs())
-      for r = 0; r < removed_singletons.length(); r = r + 1 {
-        let rs = removed_singletons[r]
-        if rs.var_idx == j &&
-          (rs.eff_rel == Ge || rs.eff_rel == Eq) &&
-          (rs.bound_val - red_v.lb).abs() <= btol {
-          orig_dual[rs.orig_idx] = s_j / (sense_sign * rs.coeff)
-          absorbed = true
-          break
-        }
+    if s_j > config.tol {
+      let (src_idx, src_coeff) = lb_source[j]
+      if src_idx >= 0 && src_coeff != 0.0 {
+        orig_dual[src_idx] = s_j / (sense_sign * src_coeff)
+        absorbed = true
       }
-    } else if s_j < -config.tol && red_v.ub < orig_v.ub - config.tol {
-      let btol = 1.0e-7 * (1.0 + red_v.ub.abs())
-      for r = 0; r < removed_singletons.length(); r = r + 1 {
-        let rs = removed_singletons[r]
-        if rs.var_idx == j &&
-          (rs.eff_rel == Le || rs.eff_rel == Eq) &&
-          (rs.bound_val - red_v.ub).abs() <= btol {
-          orig_dual[rs.orig_idx] = s_j / (sense_sign * rs.coeff)
-          absorbed = true
-          break
-        }
+    } else if s_j < -config.tol {
+      let (src_idx, src_coeff) = ub_source[j]
+      if src_idx >= 0 && src_coeff != 0.0 {
+        orig_dual[src_idx] = s_j / (sense_sign * src_coeff)
+        absorbed = true
       }
     }
     orig_rc[j] = if absorbed { 0.0 } else { self.vars[j].obj - at_y[j] }

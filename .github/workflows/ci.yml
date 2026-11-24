@@ -25,7 +25,7 @@ jobs:
       - name: Typecheck, Test, Example & Benchmark on ${{ matrix.target }}
         run: |
           moon version
-          moon check --target ${{ matrix.target }}
-          moon test --target ${{ matrix.target }}
+          moon check --deny-warn --target ${{ matrix.target }}
+          moon test --deny-warn --target ${{ matrix.target }}
           moon run src/examples --target ${{ matrix.target }}
           moon bench --release --target ${{ matrix.target }}

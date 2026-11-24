@@ -5,11 +5,11 @@
 ![Backends: wasm-gc | js | native](https://img.shields.io/badge/targets-wasm--gc%20%7C%20js%20%7C%20native-brightgreen.svg)
 
 > **零外部依赖、全后端（`wasm-gc` / `js` / `native`）通用的纯 MoonBit 线性规划（LP）与混合整数线性规划（MILP）求解器与建模库**  
-> 已通过真实国际标准 **Netlib `ADLITTLE`（56×97）**、**Netlib `AFIRO`（28×32）**、**HiGHS `AVGAS`/`SMALL_MIP`**、**MIPLIB 3.0 `FLUGPL`** 及 **49 项**全后端正确性/回归测试与 `moon bench --release` 验证。
+> 已通过真实国际标准 **Netlib `ADLITTLE`（56×97）**、**Netlib `AFIRO`（28×32）**、**HiGHS `AVGAS`/`SMALL_MIP`**、**MIPLIB 3.0 `FLUGPL`** 及 **56 项** `--deny-warn` 全后端正确性/回归测试与 `moon bench --release` 验证。
 
 ---
 
-## 核心特性（v0.6.0 · 正确性加固版 · 三后端 CI + `moon bench` 全绿验证）
+## 核心特性（v0.7.0 · MILP 最优性/割平面/数值尺度全面加固 · 三后端 `--deny-warn` 全绿）
 
 - **类型安全的代数建模 DSL 与严格校验** (`src/types.mbt`, `src/model.mbt`)
   - 支持 `Minimize` / `Maximize`、连续 (`Continuous`)、一般整数 (`Integer`)、0-1 二值 (`Binary`) 变量、任意上下界与自由变量；内置拒绝 `NaN`/`±Inf` 的独立可行性校验器 `Model::verify_solution`。
@@ -74,11 +74,12 @@ let tsp_sol = @moonlp.solve_milp_warm(tsp) // Optimal tour = 80.0
 
 ---
 
-## 49 项客观数学与正确性回归测试清单（`wasm-gc` / `js` / `native` 全绿）
+## 56 项客观数学与正确性回归测试清单（`wasm-gc` / `js` / `native` `--deny-warn` 全绿）
 
 | 类别 | 覆盖测试算例 |
 | :--- | :--- |
 | **国际标准工业基准** | **真实 Netlib `ADLITTLE`**（56×97，Ruiz 平衡缩放 + KKT 认证）、**真实 Netlib `AFIRO`**（28×32，最优值 `-464.75314286` + KKT 强对偶认证）、**真实 HiGHS `AVGAS` & `SMALL_MIP`**、**真实 MIPLIB 3.0 `FLUGPL`**（根节点 GMI 割平面收紧） |
+| **v0.7.0 最优性/割平面回归集（7 项）** | 候选修复不提前关闭松弛未达界节点（$y \le 2\times10^7 x$）、GMI 保留有意义小系数不切掉真最优解（$0.055$）、纯相对 MIP gap 剪枝不剪掉 $10^{-6}$ 微尺度真最优、KKT 证书对 $10^9$ 目标常数尺度不变、$10^{-10}$/$10^{-14}$ 跨入口有界性与紧 Phase I、Presolve 精确来源行对偶分配、`.lp` 严格消费完整 RHS/Bounds |
 | **v0.6.0 正确性回归集（8 项）** | `max_iters=1` 状态传播（4 入口统一返回 `MaxIterations`）、LP 无界 vs MILP 不可行/无界消歧、$10^8 x \le 99{,}999{,}950$ 次容差取整细分分支、严格 KKT 拒绝次优点与 `NaN`/`Inf`、$10^{-10} x \le 1$ 自动缩放与紧比率测试、`.lp` 目标常数往返、`.mps` `OBJSENSE MAX`+目标常数+固定二值变量往返、`solve_presolved` 原空间对偶恢复与 KKT 认证 |
 | **原始 & 对偶单纯形 LP** | 2D 生产规划 + 影子价格、Diet `>=` 最小化（Primal 与 Dual Simplex 双校验）、自由变量与负下界、不可行与无界证明（Primal & Dual）、KKT 强对偶证书、RHS/检验数灵敏度分析 |
 | **病态压测与图论 LP** | **Beale 1955 退化循环 LP**（Bland 防循环）、**Klee-Minty 4D 立方体**、CLRS 网络最大流（=23）、3×3 运输问题 LP（=715）、多周期供应链排产 LP（=235）、合金混料 `LinearExpr` |
@@ -91,7 +92,7 @@ let tsp_sol = @moonlp.solve_milp_warm(tsp) // Optimal tour = 80.0
 
 ```text
 moonlp/
-├── moon.mod                      # MoonBit 1.0 模块配置 (v0.6.0)
+├── moon.mod                      # MoonBit 1.0 模块配置 (v0.7.0)
 ├── .github/workflows/ci.yml      # wasm-gc / js / native 三后端测试 + moon bench 矩阵
 ├── src/
 │   ├── moon.pkg                  # 包配置（含 wbtest @bench 依赖）
@@ -111,7 +112,7 @@ moonlp/
 │   ├── mps_format.mbt            # Netlib / MIPLIB .mps 双向解析器与导出器（含 OBJSENSE/FX/常数）
 │   ├── benchmarks.mbt            # 真实 Netlib AFIRO、HiGHS AVGAS 与 TSP-MTZ 算例集
 │   ├── benchmarks_netlib_large.mbt # 真实 Netlib ADLITTLE、HiGHS SMALL_MIP 与 MIPLIB FLUGPL
-│   ├── moonlp_test.mbt           # 49 项全量单元测试与正确性回归集
+│   ├── moonlp_wbtest.mbt         # 56 项全量单元测试与正确性回归集（--deny-warn 全绿）
 │   ├── moonlp_bench_wbtest.mbt   # 官方 moon bench --release 性能基准套件
 │   └── examples/main.mbt         # 6 合 1 CLI 演示（含 Netlib AFIRO 与 5 城 TSP-MTZ）
 └── verify/                       # 独立 Python 数学对拍校验脚本

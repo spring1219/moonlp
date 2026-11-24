@@ -208,15 +208,44 @@ fn needs_auto_scaling(model : Model) -> Bool {
 }
 
 ///|
+/// Check whether coefficients fall near or below simplex pivot tolerance (< 1e-11 or > 1e11),
+/// requiring Ruiz-scaled LP relaxations in MILP solvers.
+fn has_extreme_scale(model : Model) -> Bool {
+  if model.constraints.length() == 0 || model.vars.length() == 0 {
+    return false
+  }
+  let mut min_v = 1.0e308
+  let mut max_v = 0.0
+  for i = 0; i < model.constraints.length(); i = i + 1 {
+    let terms = model.constraints[i].terms
+    for k = 0; k < terms.length(); k = k + 1 {
+      let a = terms[k].coeff.abs()
+      if a > 0.0 {
+        if a < min_v {
+          min_v = a
+        }
+        if a > max_v {
+          max_v = a
+        }
+      }
+    }
+  }
+  if max_v <= 0.0 {
+    return false
+  }
+  min_v < 1.0e-11 || max_v > 1.0e11 || max_v / min_v > 1.0e11
+}
+
+///|
 /// Solve the LP relaxation of a Model using Two-Phase Simplex with automatic
-/// Ruiz equilibration scaling on poorly-scaled matrices.
+/// Ruiz equilibration scaling on poorly-scaled matrices (including MILP relaxations).
 pub fn solve_lp(
   model : Model,
   config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
-  if !model.has_integer_vars() && needs_auto_scaling(model) {
-    let (sol, _) = model.solve_scaled(passes=6, config~)
-    if sol.status == Optimal && model.verify_solution(sol, tol=1.0e-4) {
+  if needs_auto_scaling(model) {
+    let (sol, _) = solve_lp_relaxation_scaled(model, passes=6, config~)
+    if sol.status == Optimal && model.verify_lp_feasibility(sol, tol=1.0e-4) {
       return sol
     }
     if sol.status != Optimal {
@@ -224,12 +253,10 @@ pub fn solve_lp(
     }
   }
   let raw = solve_lp_unscaled(model, config)
-  if raw.status == Optimal &&
-    !model.has_integer_vars() &&
-    !model.verify_solution(raw, tol=1.0e-4) {
-    let (scaled_sol, _) = model.solve_scaled(passes=6, config~)
+  if raw.status == Optimal && !model.verify_lp_feasibility(raw, tol=1.0e-4) {
+    let (scaled_sol, _) = solve_lp_relaxation_scaled(model, passes=6, config~)
     if scaled_sol.status == Optimal &&
-      model.verify_solution(scaled_sol, tol=1.0e-4) {
+      model.verify_lp_feasibility(scaled_sol, tol=1.0e-4) {
       return scaled_sol
     }
   }
@@ -490,7 +517,7 @@ fn solve_lp_unscaled(
     }
 
     let p1_obj = -tab[m_total][rhs_col]
-    if p1_obj > config.tol * 100.0 {
+    if p1_obj > config.tol {
       return Solution::empty(Infeasible, total_iters, 1)
     }
 

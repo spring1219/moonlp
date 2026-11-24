@@ -239,6 +239,58 @@ pub fn Model::verify_solution(
 }
 
 ///|
+/// Verify LP primal feasibility (bounds + constraints + finiteness), ignoring integrality.
+fn Model::verify_lp_feasibility(
+  self : Model,
+  sol : Solution,
+  tol~ : Double = 1.0e-5,
+) -> Bool {
+  if sol.status != Optimal {
+    return false
+  }
+  if sol.primal.length() != self.vars.length() {
+    return false
+  }
+  if !is_finite_double(sol.objective) {
+    return false
+  }
+  let mut obj_val = self.obj_constant
+  for i = 0; i < self.vars.length(); i = i + 1 {
+    let x = sol.primal[i]
+    if !is_finite_double(x) {
+      return false
+    }
+    let v = self.vars[i]
+    if x < v.lb - tol || x > v.ub + tol {
+      return false
+    }
+    obj_val = obj_val + v.obj * x
+  }
+  if !is_finite_double(obj_val) ||
+    (obj_val - sol.objective).abs() >
+    tol * (1.0 + obj_val.abs() + self.obj_constant.abs()) {
+    return false
+  }
+  for c_idx = 0; c_idx < self.constraints.length(); c_idx = c_idx + 1 {
+    let c = self.constraints[c_idx]
+    let mut lhs = 0.0
+    for j = 0; j < c.terms.length(); j = j + 1 {
+      let t = c.terms[j]
+      lhs = lhs + t.coeff * sol.primal[t.var_id.index]
+    }
+    if !is_finite_double(lhs) {
+      return false
+    }
+    match c.relation {
+      Le => if lhs > c.rhs + tol { return false }
+      Ge => if lhs < c.rhs - tol { return false }
+      Eq => if (lhs - c.rhs).abs() > tol { return false }
+    }
+  }
+  true
+}
+
+///|
 /// High-level entry point: automatically dispatches to LP Simplex or MILP Branch-and-Bound.
 pub fn Model::solve(
   self : Model,

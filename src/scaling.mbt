@@ -18,15 +18,27 @@ fn d_sqrt(x : Double) -> Double {
   if x <= 0.0 {
     return 0.0
   }
-  let mut g = if x > 1.0 { x } else { 1.0 }
-  for _i = 0; _i < 24; _i = _i + 1 {
-    let next = 0.5 * (g + x / g)
+  // Exact power-of-4 range reduction to [1.0, 4.0] so Newton converges to 1e-16
+  // across the entire IEEE-754 range (1e-300 .. 1e300).
+  let mut y = x
+  let mut factor = 1.0
+  while y < 1.0 && y > 0.0 {
+    y = y * 4.0
+    factor = factor * 0.5
+  }
+  while y > 4.0 {
+    y = y * 0.25
+    factor = factor * 2.0
+  }
+  let mut g = 0.5 * (y + 1.0)
+  for _i = 0; _i < 16; _i = _i + 1 {
+    let next = 0.5 * (g + y / g)
     if (next - g).abs() <= 1.0e-15 * g {
-      return next
+      return next * factor
     }
     g = next
   }
-  g
+  g * factor
 }
 
 ///|
@@ -63,9 +75,10 @@ pub fn Model::matrix_scale_ratio(self : Model) -> Double {
 ///   y_orig[i]  = row_scales[i] * y_scaled[i]
 ///   rc_orig[j] = rc_scaled[j] / col_scales[j]
 ///   obj_orig   = obj_scaled (invariant)
-pub fn Model::ruiz_scale(
+fn Model::ruiz_scale_core(
   self : Model,
-  passes~ : Int32 = 6,
+  passes : Int32,
+  relax_int : Bool,
 ) -> (Model, ScalingReport) {
   let m = self.constraints.length()
   let n = self.vars.length()
@@ -73,8 +86,8 @@ pub fn Model::ruiz_scale(
   let r_acc = Array::make(m, 1.0)
   let c_acc = Array::make(n, 1.0)
 
-  // Only scale continuous LPs (scaling integer variables breaks integrality lattice)
-  if self.has_integer_vars() || m == 0 || n == 0 {
+  // Only scale continuous LPs unless explicitly relaxing integrality for LP relaxation
+  if (!relax_int && self.has_integer_vars()) || m == 0 || n == 0 {
     return (
       self,
       {
@@ -179,6 +192,44 @@ pub fn Model::ruiz_scale(
       col_scales: c_acc,
     },
   )
+}
+
+///|
+/// Apply `passes` iterations of Ruiz L-infinity equilibration scaling to an LP Model.
+/// Returns (scaled_model, scaling_report).
+pub fn Model::ruiz_scale(
+  self : Model,
+  passes~ : Int32 = 6,
+) -> (Model, ScalingReport) {
+  self.ruiz_scale_core(passes, false)
+}
+
+///|
+/// Solve the LP relaxation (ignoring integrality) with Ruiz L-infinity scaling
+/// and exact unscaling back to original variable/dual space.
+fn solve_lp_relaxation_scaled(
+  model : Model,
+  passes~ : Int32 = 6,
+  config~ : SolverConfig = SolverConfig::default(),
+) -> (Solution, ScalingReport) {
+  let (scaled, rep) = model.ruiz_scale_core(passes, true)
+  let ssol = solve_lp_unscaled(scaled, config)
+  if ssol.status != Optimal {
+    return (ssol, rep)
+  }
+  let primal : Array[Double] = []
+  for j = 0; j < ssol.primal.length(); j = j + 1 {
+    primal.push(ssol.primal[j] * rep.col_scales[j])
+  }
+  let dual : Array[Double] = []
+  for i = 0; i < ssol.dual.length(); i = i + 1 {
+    dual.push(ssol.dual[i] * rep.row_scales[i])
+  }
+  let rc : Array[Double] = []
+  for j = 0; j < ssol.reduced_costs.length(); j = j + 1 {
+    rc.push(ssol.reduced_costs[j] / rep.col_scales[j])
+  }
+  ({ ..ssol, primal, dual, reduced_costs: rc, }, rep)
 }
 
 ///|

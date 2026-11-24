@@ -1525,3 +1525,226 @@ test "49. [P1-2c] solve_presolved recovers full original-space duals & passes KK
   assert_approx(psol2.dual[1], 2.0, 1.0e-6)
   assert_true(m2.certify_lp_solution(psol2).certified_optimal)
 }
+
+///|
+test "50. [v0.7 P0-1] Degraded incumbent repair never prematurely fathoms fractional node" {
+  // max y s.t. y <= 2e7 * x, x + y <= 10, x in {0, 1}, y >= 0
+  // Root LP has x ~ 5e-7 (within int_tol=1e-6), repair gives feasible (0,0) obj=0,
+  // but node LP bound is ~10, so solver MUST branch and find true optimum (1, 9) obj=9.
+  let m = Model::new(Maximize)
+  let x = m.add_binary_var("x", obj=0.0)
+  let y = m.add_continuous_var("y", lb=0.0, obj=1.0)
+  m.add_constraint(
+    "link",
+    [{ var_id: y, coeff: 1.0, }, { var_id: x, coeff: -2.0e7, }],
+    Le,
+    0.0,
+  )
+  m.add_constraint(
+    "cap",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 1.0, }],
+    Le,
+    10.0,
+  )
+
+  let s1 = solve_milp(m)
+  assert_eq(s1.status, Optimal)
+  assert_true(m.verify_solution(s1))
+  assert_approx(s1.objective, 9.0, 1.0e-6)
+  assert_approx(s1.primal[0], 1.0, 1.0e-6)
+  assert_approx(s1.primal[1], 9.0, 1.0e-6)
+
+  let s2 = solve_milp_warm(m)
+  assert_eq(s2.status, Optimal)
+  assert_true(m.verify_solution(s2))
+  assert_approx(s2.objective, 9.0, 1.0e-6)
+
+  let (s3, _) = solve_milp_with_cuts(m)
+  assert_eq(s3.status, Optimal)
+  assert_true(m.verify_solution(s3))
+  assert_approx(s3.objective, 9.0, 1.0e-6)
+
+  let (s4, _) = solve_milp_branch_and_cut(m)
+  assert_eq(s4.status, Optimal)
+  assert_true(m.verify_solution(s4))
+  assert_approx(s4.objective, 9.0, 1.0e-6)
+}
+
+///|
+test "51. [v0.7 P0-2] GMI cuts retain small nonzero coefficients & never cut off optimum" {
+  // max x - 2.1e-9 * y s.t. x - 2e-9 * y <= 0.1, 0 <= y <= 4.6e8, x in {0, 1}
+  // Exact optimum: x = 1, y = 4.5e8, obj = 0.055.
+  let m = Model::new(Maximize)
+  let x = m.add_binary_var("x", obj=1.0)
+  let y = m.add_continuous_var("y", lb=0.0, ub=4.6e8, obj=-2.1e-9)
+  m.add_constraint(
+    "c1",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: -2.0e-9, }],
+    Le,
+    0.1,
+  )
+
+  let s1 = solve_milp(m)
+  assert_eq(s1.status, Optimal)
+  assert_true(m.verify_solution(s1, tol=1.0e-5))
+  assert_approx(s1.objective, 0.055, 1.0e-6)
+
+  let s2 = solve_milp_warm(m)
+  assert_eq(s2.status, Optimal)
+  assert_true(m.verify_solution(s2, tol=1.0e-5))
+  assert_approx(s2.objective, 0.055, 1.0e-6)
+
+  let (s3, _) = solve_milp_with_cuts(m)
+  assert_eq(s3.status, Optimal)
+  assert_true(m.verify_solution(s3, tol=1.0e-5))
+  assert_approx(s3.objective, 0.055, 1.0e-6)
+
+  let (s4, _) = solve_milp_branch_and_cut(m)
+  assert_eq(s4.status, Optimal)
+  assert_true(m.verify_solution(s4, tol=1.0e-5))
+  assert_approx(s4.objective, 0.055, 1.0e-6)
+}
+
+///|
+test "52. [v0.7 P0-3] Relative MIP gap pruning does not prune tiny-scale 1e-6 optimum" {
+  // max 1e-6 * x + 9e-7 * y s.t. 1.5*x + y <= 1.5, x, y in {0, 1}
+  // Root LP = 1.2333e-6; x=0 branch gives incumbent 9e-7; x=1 branch gives true optimum 1e-6.
+  let m = Model::new(Maximize)
+  let x = m.add_binary_var("x", obj=1.0e-6)
+  let y = m.add_binary_var("y", obj=9.0e-7)
+  m.add_constraint(
+    "c1",
+    [{ var_id: x, coeff: 1.5, }, { var_id: y, coeff: 1.0, }],
+    Le,
+    1.5,
+  )
+
+  let s1 = solve_milp(m)
+  assert_eq(s1.status, Optimal)
+  assert_approx(s1.objective, 1.0e-6, 1.0e-12)
+  assert_approx(s1.primal[0], 1.0, 1.0e-9)
+
+  let s2 = solve_milp_warm(m)
+  assert_eq(s2.status, Optimal)
+  assert_approx(s2.objective, 1.0e-6, 1.0e-12)
+
+  let (s3, _) = solve_milp_branch_and_cut(m, max_root_cuts=0)
+  assert_eq(s3.status, Optimal)
+  assert_approx(s3.objective, 1.0e-6, 1.0e-12)
+
+  let (s4, _) = solve_milp_branch_and_cut(m)
+  assert_eq(s4.status, Optimal)
+  assert_approx(s4.objective, 1.0e-6, 1.0e-12)
+}
+
+///|
+test "53. [v0.7 P0-4] KKT certificate primal/dual feasibility is invariant to huge obj_constant" {
+  let m = Model::new(Minimize)
+  let x = m.add_continuous_var("x", lb=0.0, obj=0.0)
+  m.set_obj_constant(1.0e9)
+  m.add_constraint("zero_cap", [{ var_id: x, coeff: 1.0, }], Le, 0.0)
+
+  let bad : Solution = {
+    status: Optimal,
+    objective: 1.0e9,
+    primal: [1.0],
+    dual: [0.0],
+    reduced_costs: [0.0],
+    iterations: 0,
+    nodes_explored: 1,
+    mip_gap: 0.0,
+  }
+  let cert_bad = m.certify_lp_solution(bad)
+  assert_false(cert_bad.primal_feasible)
+  assert_false(cert_bad.certified_optimal)
+  assert_approx(cert_bad.max_primal_violation, 1.0, 1.0e-9)
+
+  let opt = m.solve()
+  let cert_ok = m.certify_lp_solution(opt)
+  assert_true(cert_ok.primal_feasible)
+  assert_true(cert_ok.certified_optimal)
+}
+
+///|
+test "54. [v0.7 P1-1] Small-coeff boundedness across presolve & MILP relaxations + tight Phase I" {
+  // A) max x, 1e-10 * x <= 1 via solve_presolved() must stay Optimal (not Unbounded!)
+  let m1 = Model::new(Maximize)
+  let x1 = m1.add_continuous_var("x", lb=0.0, obj=1.0)
+  m1.add_constraint("tiny", [{ var_id: x1, coeff: 1.0e-10, }], Le, 1.0)
+  let p1 = m1.solve_presolved()
+  assert_eq(p1.status, Optimal)
+  assert_approx(p1.objective, 1.0e10, 1.0e4)
+  assert_true(m1.certify_lp_solution(p1, tol=1.0e-4).certified_optimal)
+
+  // B) max x, 1e-14 * x <= 1 with an unrelated binary var across ALL 4 MILP entry points
+  let m2 = Model::new(Maximize)
+  let x2 = m2.add_continuous_var("x", lb=0.0, obj=1.0)
+  let _b = m2.add_binary_var("b", obj=0.0)
+  m2.add_constraint("ultra_tiny", [{ var_id: x2, coeff: 1.0e-14, }], Le, 1.0)
+
+  let r1 = solve_milp(m2)
+  assert_eq(r1.status, Optimal)
+  assert_approx(r1.objective, 1.0e14, 1.0e8)
+  let r2 = solve_milp_warm(m2)
+  assert_eq(r2.status, Optimal)
+  assert_approx(r2.objective, 1.0e14, 1.0e8)
+  let (r3, _) = solve_milp_with_cuts(m2)
+  assert_eq(r3.status, Optimal)
+  assert_approx(r3.objective, 1.0e14, 1.0e8)
+  let (r4, _) = solve_milp_branch_and_cut(m2)
+  assert_eq(r4.status, Optimal)
+  assert_approx(r4.objective, 1.0e14, 1.0e8)
+
+  // C) Contradictory constraints differing by 5e-8 (> config.tol = 1e-9) must be Infeasible
+  let m3 = Model::new(Minimize)
+  let x3 = m3.add_continuous_var("x", lb=0.0, obj=1.0)
+  m3.add_constraint("ub", [{ var_id: x3, coeff: 1.0, }], Le, 1.0)
+  m3.add_constraint("lb", [{ var_id: x3, coeff: 1.0, }], Ge, 1.0 + 5.0e-8)
+  assert_eq(solve_lp(m3).status, Infeasible)
+}
+
+///|
+test "55. [v0.7 P1-2] Presolve assigns singleton shadow price to exact tightening row" {
+  // max x s.t. c0: x <= 100_000_001, c1: x <= 100_000_000
+  let m = Model::new(Maximize)
+  let x = m.add_continuous_var("x", lb=0.0, obj=1.0)
+  m.add_constraint("c0_loose", [{ var_id: x, coeff: 1.0, }], Le, 100000001.0)
+  m.add_constraint("c1_tight", [{ var_id: x, coeff: 1.0, }], Le, 100000000.0)
+
+  let direct = m.solve()
+  assert_eq(direct.status, Optimal)
+  assert_approx(direct.dual[0], 0.0, 1.0e-9)
+  assert_approx(direct.dual[1], 1.0, 1.0e-9)
+
+  let presolved = m.solve_presolved()
+  assert_eq(presolved.status, Optimal)
+  assert_eq(presolved.dual.length(), 2)
+  assert_approx(presolved.dual[0], 0.0, 1.0e-9)
+  assert_approx(presolved.dual[1], 1.0, 1.0e-9)
+  assert_true(m.certify_lp_solution(presolved).certified_optimal)
+
+  // Swapped wrong dual [1, 0] must be rejected by KKT certificate (violates complementarity by 1.0)
+  let wrong_dual : Solution = { ..presolved, dual: [1.0, 0.0], }
+  assert_false(m.certify_lp_solution(wrong_dual).certified_optimal)
+}
+
+///|
+test "56. [v0.7 P1-3] CPLEX .lp parser rejects trailing tokens on constraint RHS & bounds" {
+  let bad_rhs = try {
+    let _ = parse_lp("Maximize\n x\nSubject To\n c1: x <= 1 + 1\nEnd")
+    false
+  } catch {
+    ParseError(_) => true
+  }
+  assert_true(bad_rhs)
+
+  let bad_bound = try {
+    let _ = parse_lp(
+      "Maximize\n x\nSubject To\n c1: x <= 5\nBounds\n x <= 2 + 3\nEnd",
+    )
+    false
+  } catch {
+    ParseError(_) => true
+  }
+  assert_true(bad_bound)
+}

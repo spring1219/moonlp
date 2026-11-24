@@ -625,7 +625,12 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
         let (terms, _) = parse_linear_tokens(
           tokens, start, rel_idx, model, name_to_id,
         )
-        let (rhs, _) = parse_signed_number(tokens, rel_idx + 1)
+        let (rhs, rhs_end) = parse_signed_number(tokens, rel_idx + 1)
+        if rhs_end != tokens.length() {
+          raise ParseError(
+            "Unexpected trailing tokens after constraint RHS: " + clean,
+          )
+        }
         model.add_constraint(cname, terms, rel, rhs)
       }
       Bounds => {
@@ -648,9 +653,16 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
         }
         if rel_positions.length() == 2 {
           // Format: lb <= x <= ub
-          let (lb, _) = parse_signed_number(tokens, 0)
+          let (lb, lb_end) = parse_signed_number(tokens, 0)
+          if lb_end != rel_positions[0] ||
+            rel_positions[0] + 2 != rel_positions[1] {
+            raise ParseError("Invalid range bound declaration: " + clean)
+          }
           let var_tok = tokens[rel_positions[0] + 1]
-          let (ub, _) = parse_signed_number(tokens, rel_positions[1] + 1)
+          let (ub, ub_end) = parse_signed_number(tokens, rel_positions[1] + 1)
+          if ub_end != tokens.length() {
+            raise ParseError("Unexpected trailing tokens in bound: " + clean)
+          }
           let vid = get_or_create_var(model, name_to_id, var_tok)
           model.set_var_bounds(vid, lb, ub)
         } else if rel_positions.length() == 1 {
@@ -660,7 +672,10 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
           let lhs_is_var = rp == 1 && try_parse_double(tokens[0]) is None
           if lhs_is_var {
             let vid = get_or_create_var(model, name_to_id, tokens[0])
-            let (val, _) = parse_signed_number(tokens, rp + 1)
+            let (val, val_end) = parse_signed_number(tokens, rp + 1)
+            if val_end != tokens.length() {
+              raise ParseError("Unexpected trailing tokens in bound: " + clean)
+            }
             let old = model.vars[vid.index]
             if op == "<=" || op == "<" {
               model.set_var_bounds(vid, old.lb, val)
@@ -671,7 +686,10 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
             }
           } else {
             // Format: lb <= x
-            let (val, _) = parse_signed_number(tokens, 0)
+            let (val, val_end) = parse_signed_number(tokens, 0)
+            if val_end != rp || rp + 2 != tokens.length() {
+              raise ParseError("Invalid bound declaration: " + clean)
+            }
             let var_tok = tokens[rp + 1]
             let vid = get_or_create_var(model, name_to_id, var_tok)
             let old = model.vars[vid.index]
