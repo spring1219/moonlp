@@ -68,6 +68,15 @@ pub fn Model::to_lp_string(self : Model) -> String {
   }
   buf.write_string("  obj: ")
   buf.write_string(format_linear_terms(self, obj_terms))
+  if self.obj_constant != 0.0 {
+    if self.obj_constant > 0.0 {
+      buf.write_string(" + ")
+      buf.write_string(self.obj_constant.to_string())
+    } else {
+      buf.write_string(" - ")
+      buf.write_string((-self.obj_constant).to_string())
+    }
+  }
   buf.write_string("\nSubject To\n")
 
   for i = 0; i < self.constraints.length(); i = i + 1 {
@@ -421,8 +430,10 @@ fn parse_linear_tokens(
   end_idx : Int32,
   model : Model,
   name_to_id : Map[String, VarId],
-) -> Array[Term] raise ParseError {
+  allow_const~ : Bool = false,
+) -> (Array[Term], Double) raise ParseError {
   let terms : Array[Term] = []
+  let mut const_sum = 0.0
   let mut i = start_idx
   let mut sign = 1.0
   while i < end_idx {
@@ -449,8 +460,9 @@ fn parse_linear_tokens(
             continue
           }
         }
-        // Constant 0 is allowed (e.g. `0`)
-        if num != 0.0 {
+        if allow_const {
+          const_sum = const_sum + sign * num
+        } else if num != 0.0 {
           raise ParseError(
             "Unexpected standalone constant in linear expression: " + tok,
           )
@@ -466,7 +478,7 @@ fn parse_linear_tokens(
       }
     }
   }
-  terms
+  (terms, const_sum)
 }
 
 ///|
@@ -559,13 +571,17 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
         )
       Objective => {
         let start = if tokens.length() >= 2 && tokens[1] == ":" { 2 } else { 0 }
-        let terms = parse_linear_tokens(
+        let (terms, obj_c) = parse_linear_tokens(
           tokens,
           start,
           tokens.length(),
           model,
           name_to_id,
+          allow_const=true,
         )
+        if obj_c != 0.0 {
+          model.set_obj_constant(model.obj_constant + obj_c)
+        }
         for i = 0; i < terms.length(); i = i + 1 {
           let t = terms[i]
           let old = model.vars[t.var_id.index]
@@ -606,7 +622,7 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
             "Missing relational operator in constraint: " + clean,
           )
         }
-        let terms = parse_linear_tokens(
+        let (terms, _) = parse_linear_tokens(
           tokens, start, rel_idx, model, name_to_id,
         )
         let (rhs, _) = parse_signed_number(tokens, rel_idx + 1)

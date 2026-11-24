@@ -47,8 +47,8 @@ fn run_dual_simplex(
       return (Optimal, iters)
     }
 
-    // 2. Dual minimum ratio test with Harris pivot magnitude tie-breaking
-    //    (and strict Bland index tie-breaking during stall)
+    // 2. Dual minimum ratio test with tight relative tie tolerance (1e-12) and Harris pivot guard
+    let pivot_tol = 1.0e-12
     let mut enter_col = -1
     let mut best_ratio = 1.0e308
     let mut best_pivot = 0.0
@@ -58,14 +58,15 @@ fn run_dual_simplex(
         continue
       }
       let a_lj = tab[leave_row][j]
-      if a_lj < -config.tol {
+      if a_lj < -pivot_tol {
         let rc = if obj_row[j] < 0.0 { 0.0 } else { obj_row[j] }
         let ratio = rc / -a_lj
-        if enter_col == -1 || ratio < best_ratio - config.tol {
+        let tie_tol = 1.0e-12 * (1.0 + best_ratio.abs())
+        if enter_col == -1 || ratio < best_ratio - tie_tol {
           best_ratio = ratio
           best_pivot = -a_lj
           enter_col = j
-        } else if (ratio - best_ratio).abs() <= config.tol {
+        } else if (ratio - best_ratio).abs() <= tie_tol {
           if use_bland {
             if j < enter_col {
               enter_col = j

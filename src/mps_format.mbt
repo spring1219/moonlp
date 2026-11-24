@@ -6,6 +6,7 @@
 ///|
 priv enum MpsSection {
   None
+  ObjSense
   Rows
   Columns
   Rhs
@@ -100,6 +101,16 @@ pub fn parse_mps(
       continue
     }
     if head == "objsense" {
+      if fields.length() >= 2 {
+        let s = to_lower_ascii(fields[1])
+        if s == "max" || s == "maximize" {
+          model.set_sense(Maximize)
+        } else if s == "min" || s == "minimize" {
+          model.set_sense(Minimize)
+        }
+      } else {
+        section = ObjSense
+      }
       continue
     }
     if head == "endata" {
@@ -108,6 +119,15 @@ pub fn parse_mps(
 
     match section {
       None => raise ParseError("MPS content before ROWS section: " + raw)
+      ObjSense => {
+        if head == "max" || head == "maximize" {
+          model.set_sense(Maximize)
+        } else if head == "min" || head == "minimize" {
+          model.set_sense(Minimize)
+        } else {
+          raise ParseError("Unknown MPS OBJSENSE value: " + raw)
+        }
+      }
       Rows => {
         if fields.length() < 2 {
           raise ParseError("Invalid MPS ROWS entry: " + raw)
@@ -192,9 +212,13 @@ pub fn parse_mps(
             Some(v) => v
             None => raise ParseError("Invalid MPS RHS number: " + fields[p + 1])
           }
-          match row_name_to_idx.get(rname) {
-            Some(ridx) => row_rhs[ridx] = val
-            None => ()
+          if rname == obj_row_name {
+            model.set_obj_constant(-val)
+          } else {
+            match row_name_to_idx.get(rname) {
+              Some(ridx) => row_rhs[ridx] = val
+              None => ()
+            }
           }
           p = p + 2
         }
@@ -329,7 +353,10 @@ pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
   let buf = StringBuilder()
   buf.write_string("NAME          ")
   buf.write_string(name)
-  buf.write_string("\nROWS\n")
+  match self.sense {
+    Minimize => buf.write_string("\nOBJSENSE\n MIN\nROWS\n")
+    Maximize => buf.write_string("\nOBJSENSE\n MAX\nROWS\n")
+  }
   buf.write_string(" N  OBJ\n")
 
   let row_names : Array[String] = []
@@ -349,14 +376,10 @@ pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
 
   // Build column-major entries: for each variable j, list of (row_name, coeff)
   let col_entries : Array[Array[(String, Double)]] = []
-  let sense_sign = match self.sense {
-    Minimize => 1.0
-    Maximize => -1.0
-  }
   for j = 0; j < self.vars.length(); j = j + 1 {
     let entries : Array[(String, Double)] = []
     if self.vars[j].obj != 0.0 {
-      entries.push(("OBJ", self.vars[j].obj * sense_sign))
+      entries.push(("OBJ", self.vars[j].obj))
     }
     col_entries.push(entries)
   }
@@ -418,6 +441,11 @@ pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
   }
 
   buf.write_string("RHS\n")
+  if self.obj_constant != 0.0 {
+    buf.write_string("    RHS1  OBJ  ")
+    buf.write_string((-self.obj_constant).to_string())
+    buf.write_string("\n")
+  }
   for i = 0; i < self.constraints.length(); i = i + 1 {
     if self.constraints[i].rhs != 0.0 {
       buf.write_string("    RHS1  ")
@@ -438,6 +466,28 @@ pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
         buf.write_string(" BV BND1  ")
         buf.write_string(v.name)
         buf.write_string("\n")
+        if has_lb && has_ub && (v.ub - v.lb).abs() <= 1.0e-12 {
+          buf.write_string(" FX BND1  ")
+          buf.write_string(v.name)
+          buf.write_string("  ")
+          buf.write_string(v.lb.to_string())
+          buf.write_string("\n")
+        } else {
+          if has_lb && v.lb > 0.0 {
+            buf.write_string(" LO BND1  ")
+            buf.write_string(v.name)
+            buf.write_string("  ")
+            buf.write_string(v.lb.to_string())
+            buf.write_string("\n")
+          }
+          if has_ub && v.ub < 1.0 {
+            buf.write_string(" UP BND1  ")
+            buf.write_string(v.name)
+            buf.write_string("  ")
+            buf.write_string(v.ub.to_string())
+            buf.write_string("\n")
+          }
+        }
       }
       _ =>
         if !has_lb && !has_ub {

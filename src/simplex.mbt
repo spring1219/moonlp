@@ -124,25 +124,26 @@ fn run_simplex_phase(
       return (Optimal, iters)
     }
 
-    // 2. Minimum ratio test: Harris stability tie-breaking (largest pivot |a_ie|)
-    //    switching to strict Bland smallest-index tie-breaking on stall
+    // 2. Minimum ratio test with tight relative tie tolerance (1e-12) and Harris pivot guard
+    let pivot_tol = 1.0e-12
     let mut leave_row = -1
     let mut best_ratio = 1.0e308
     let mut best_pivot = 0.0
     for i = 0; i < m; i = i + 1 {
       let a_ie = tab[i][enter_col]
-      if a_ie > config.tol {
+      if a_ie > pivot_tol {
         let rhs_val = if tab[i][rhs_col] < 0.0 && tab[i][rhs_col] > -config.tol {
           0.0
         } else {
           tab[i][rhs_col]
         }
         let ratio = rhs_val / a_ie
-        if leave_row == -1 || ratio < best_ratio - config.tol {
+        let tie_tol = 1.0e-12 * (1.0 + best_ratio.abs())
+        if leave_row == -1 || ratio < best_ratio - tie_tol {
           best_ratio = ratio
           best_pivot = a_ie
           leave_row = i
-        } else if (ratio - best_ratio).abs() <= config.tol {
+        } else if (ratio - best_ratio).abs() <= tie_tol {
           if use_bland {
             if basis[i] < basis[leave_row] {
               leave_row = i
@@ -179,10 +180,66 @@ fn run_simplex_phase(
 }
 
 ///|
-/// Solve the LP relaxation of a Model using the Two-Phase Simplex Method.
+/// Check whether constraint coefficients exhibit extreme scales (< 1e-4, > 1e4, or ratio > 1e3).
+fn needs_auto_scaling(model : Model) -> Bool {
+  if model.constraints.length() == 0 || model.vars.length() == 0 {
+    return false
+  }
+  let mut min_v = 1.0e308
+  let mut max_v = 0.0
+  for i = 0; i < model.constraints.length(); i = i + 1 {
+    let terms = model.constraints[i].terms
+    for k = 0; k < terms.length(); k = k + 1 {
+      let a = terms[k].coeff.abs()
+      if a > 0.0 {
+        if a < min_v {
+          min_v = a
+        }
+        if a > max_v {
+          max_v = a
+        }
+      }
+    }
+  }
+  if max_v <= 0.0 {
+    return false
+  }
+  min_v < 1.0e-4 || max_v > 1.0e4 || max_v / min_v > 1.0e3
+}
+
+///|
+/// Solve the LP relaxation of a Model using Two-Phase Simplex with automatic
+/// Ruiz equilibration scaling on poorly-scaled matrices.
 pub fn solve_lp(
   model : Model,
   config~ : SolverConfig = SolverConfig::default(),
+) -> Solution {
+  if !model.has_integer_vars() && needs_auto_scaling(model) {
+    let (sol, _) = model.solve_scaled(passes=6, config~)
+    if sol.status == Optimal && model.verify_solution(sol, tol=1.0e-4) {
+      return sol
+    }
+    if sol.status != Optimal {
+      return sol
+    }
+  }
+  let raw = solve_lp_unscaled(model, config)
+  if raw.status == Optimal &&
+    !model.has_integer_vars() &&
+    !model.verify_solution(raw, tol=1.0e-4) {
+    let (scaled_sol, _) = model.solve_scaled(passes=6, config~)
+    if scaled_sol.status == Optimal &&
+      model.verify_solution(scaled_sol, tol=1.0e-4) {
+      return scaled_sol
+    }
+  }
+  raw
+}
+
+///|
+fn solve_lp_unscaled(
+  model : Model,
+  config : SolverConfig,
 ) -> Solution {
   let n_orig = model.vars.length()
   let m_user = model.constraints.length()
@@ -242,12 +299,25 @@ pub fn solve_lp(
       }
     }
     let primal : Array[Double] = []
+    let reduced_costs : Array[Double] = []
     for j = 0; j < n_orig; j = j + 1 {
       match mappings[j] {
-        Shifted(_, lb) => primal.push(lb)
-        NegShifted(_, ub) => primal.push(ub)
-        Free(_, _) => primal.push(0.0)
-        Fixed(val) => primal.push(val)
+        Shifted(_, lb) => {
+          primal.push(lb)
+          reduced_costs.push(model.vars[j].obj)
+        }
+        NegShifted(_, ub) => {
+          primal.push(ub)
+          reduced_costs.push(model.vars[j].obj)
+        }
+        Free(_, _) => {
+          primal.push(0.0)
+          reduced_costs.push(model.vars[j].obj)
+        }
+        Fixed(val) => {
+          primal.push(val)
+          reduced_costs.push(0.0)
+        }
       }
     }
     return {
@@ -255,7 +325,7 @@ pub fn solve_lp(
       objective: obj_offset * sense_sign,
       primal,
       dual: [],
-      reduced_costs: Array::make(n_orig, 0.0),
+      reduced_costs,
       iterations: 0,
       nodes_explored: 1,
       mip_gap: 0.0,

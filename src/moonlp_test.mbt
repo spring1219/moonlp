@@ -1263,3 +1263,265 @@ test "41. unified Branch-and-Cut exactness across Knapsack, TSP-MTZ, and Mixed I
   assert_approx(mx_sol.objective, 70.0 / 3.0, 1.0e-5)
   assert_eq(mx_stats.nodes_explored, 1)
 }
+
+///|
+test "42. [P0-1] MILP max_iters interruption never misclassified as Infeasible" {
+  let m = Model::new(Minimize)
+  let x = m.add_binary_var("x", obj=1.0)
+  m.add_constraint("fix_x", [{ var_id: x, coeff: 1.0, }], Eq, 1.0)
+
+  let tight_cfg : SolverConfig = { ..SolverConfig::default(), max_iters: 1, }
+  let lp_sol = solve_lp(m, config=tight_cfg)
+  assert_eq(lp_sol.status, MaxIterations)
+
+  let s1 = solve_milp(m, config=tight_cfg)
+  assert_eq(s1.status, MaxIterations)
+  let s2 = solve_milp_warm(m, config=tight_cfg)
+  assert_eq(s2.status, MaxIterations)
+  let (s3, _) = solve_milp_with_cuts(m, config=tight_cfg)
+  assert_eq(s3.status, MaxIterations)
+  let (s4, _) = solve_milp_branch_and_cut(m, config=tight_cfg)
+  assert_eq(s4.status, MaxIterations)
+
+  // Default budget solves cleanly to Optimal (x = 1)
+  let ok = m.solve()
+  assert_eq(ok.status, Optimal)
+  assert_approx(ok.objective, 1.0, 1.0e-6)
+  assert_approx(ok.primal[0], 1.0, 1.0e-6)
+}
+
+///|
+test "43. [P0-2] Unbounded LP relaxation disambiguated between Infeasible and Unbounded MILP" {
+  // Case A: LP relaxation unbounded (x = 0.5, y -> +inf), MILP is Infeasible!
+  let m_inf = Model::new(Maximize)
+  let x = m_inf.add_binary_var("x", obj=0.0)
+  let _y = m_inf.add_continuous_var("y", lb=0.0, ub=1.0e300, obj=1.0)
+  m_inf.add_constraint("half_x", [{ var_id: x, coeff: 1.0, }], Eq, 0.5)
+
+  assert_eq(solve_lp(m_inf).status, Unbounded)
+  assert_eq(solve_milp(m_inf).status, Infeasible)
+  assert_eq(solve_milp_warm(m_inf).status, Infeasible)
+  let (s3, _) = solve_milp_with_cuts(m_inf)
+  assert_eq(s3.status, Infeasible)
+  let (s4, _) = solve_milp_branch_and_cut(m_inf)
+  assert_eq(s4.status, Infeasible)
+
+  // Case B: LP relaxation unbounded AND integer feasible (x = 0, y -> +inf) => Unbounded
+  let m_unb = Model::new(Maximize)
+  let xb = m_unb.add_binary_var("x", obj=0.0)
+  let _yb = m_unb.add_continuous_var("y", lb=0.0, ub=1.0e300, obj=1.0)
+  m_unb.add_constraint("le_x", [{ var_id: xb, coeff: 1.0, }], Le, 1.0)
+
+  assert_eq(solve_milp(m_unb).status, Unbounded)
+  assert_eq(solve_milp_warm(m_unb).status, Unbounded)
+  let (u3, _) = solve_milp_with_cuts(m_unb)
+  assert_eq(u3.status, Unbounded)
+  let (u4, _) = solve_milp_branch_and_cut(m_unb)
+  assert_eq(u4.status, Unbounded)
+}
+
+///|
+test "44. [P0-3] Sub-tolerance integer rounding never accepts infeasible or drops optimal node" {
+  // max x, x in {0, 1}, 1e8 * x <= 99_999_950
+  // LP relaxation gives x = 0.9999995 (within 1e-6 of 1), but x = 1 violates constraint by 50!
+  // True MILP optimum is x = 0, obj = 0.
+  let m = Model::new(Maximize)
+  let x = m.add_binary_var("x", obj=1.0)
+  m.add_constraint("big_c", [{ var_id: x, coeff: 1.0e8, }], Le, 99999950.0)
+
+  let s1 = solve_milp(m)
+  assert_eq(s1.status, Optimal)
+  assert_true(m.verify_solution(s1))
+  assert_approx(s1.primal[0], 0.0, 1.0e-9)
+  assert_approx(s1.objective, 0.0, 1.0e-9)
+
+  let s2 = solve_milp_warm(m)
+  assert_eq(s2.status, Optimal)
+  assert_true(m.verify_solution(s2))
+  assert_approx(s2.primal[0], 0.0, 1.0e-9)
+
+  let (s3, _) = solve_milp_with_cuts(m)
+  assert_eq(s3.status, Optimal)
+  assert_true(m.verify_solution(s3))
+  assert_approx(s3.primal[0], 0.0, 1.0e-9)
+
+  let (s4, _) = solve_milp_branch_and_cut(m)
+  assert_eq(s4.status, Optimal)
+  assert_true(m.verify_solution(s4))
+  assert_approx(s4.primal[0], 0.0, 1.0e-9)
+}
+
+///|
+test "45. [P0-4] Strict KKT optimality certificate rejects suboptimal points & NaN/Inf" {
+  // Min x, 0 <= x <= 1
+  let m = Model::new(Minimize)
+  let _x = m.add_continuous_var("x", lb=0.0, ub=1.0, obj=1.0)
+
+  let subopt : Solution = {
+    status: Optimal,
+    objective: 1.0,
+    primal: [1.0],
+    dual: [],
+    reduced_costs: [1.0],
+    iterations: 0,
+    nodes_explored: 1,
+    mip_gap: 0.0,
+  }
+  let cert_bad = m.certify_lp_solution(subopt)
+  assert_false(cert_bad.certified_optimal)
+  assert_false(cert_bad.dual_feasible)
+  assert_true(cert_bad.duality_gap >= 0.99)
+
+  let opt_sol = m.solve()
+  let cert_ok = m.certify_lp_solution(opt_sol)
+  assert_true(cert_ok.certified_optimal)
+  assert_true(cert_ok.primal_feasible)
+  assert_true(cert_ok.dual_feasible)
+  assert_true(cert_ok.duality_gap < 1.0e-9)
+
+  // Max x, 0 <= x <= 1: reject x = 0, certify x = 1
+  let m2 = Model::new(Maximize)
+  let _x2 = m2.add_continuous_var("x", lb=0.0, ub=1.0, obj=1.0)
+  let subopt2 : Solution = { ..subopt, objective: 0.0, primal: [0.0], }
+  assert_false(m2.certify_lp_solution(subopt2).certified_optimal)
+  assert_true(m2.certify_lp_solution(m2.solve()).certified_optimal)
+
+  // Reject NaN and +Inf in verify_solution and certify_lp_solution
+  let nan = 0.0 / 0.0
+  let pos_inf = 1.0 / 0.0
+  let nan_sol : Solution = { ..subopt, objective: nan, primal: [nan], }
+  let inf_sol : Solution = { ..subopt, objective: pos_inf, primal: [pos_inf], }
+  assert_false(m.verify_solution(nan_sol))
+  assert_false(m.verify_solution(inf_sol))
+  assert_false(m.certify_lp_solution(nan_sol).certified_optimal)
+  assert_false(m.certify_lp_solution(inf_sol).certified_optimal)
+}
+
+///|
+test "46. [P1-1] Default solve_lp handles extreme coefficient scales & tight ratio tests" {
+  // Case A: max x, 1e-10 * x <= 1 => opt x = 1e10, obj = 1e10 (must NOT report Unbounded)
+  let m1 = Model::new(Maximize)
+  let x1 = m1.add_continuous_var("x", lb=0.0, obj=1.0)
+  m1.add_constraint("tiny", [{ var_id: x1, coeff: 1.0e-10, }], Le, 1.0)
+  let s1 = m1.solve()
+  assert_eq(s1.status, Optimal)
+  assert_true(m1.verify_solution(s1, tol=1.0e-4))
+  assert_approx(s1.objective, 1.0e10, 1.0e4)
+  assert_approx(s1.primal[0], 1.0e10, 1.0e4)
+
+  // Case B: two-constraint tight ratio test where smaller-pivot row is tighter by 0.5
+  let m2 = Model::new(Maximize)
+  let x2 = m2.add_continuous_var("x", lb=0.0, obj=1.0)
+  m2.add_constraint("tight_small", [{ var_id: x2, coeff: 1.0e-5, }], Le, 0.999995)
+  m2.add_constraint("loose_big", [{ var_id: x2, coeff: 1.0, }], Le, 100000.0)
+  let s2 = m2.solve()
+  assert_eq(s2.status, Optimal)
+  assert_true(m2.verify_solution(s2, tol=1.0e-5))
+  assert_approx(s2.primal[0], 99999.5, 1.0e-4)
+  assert_approx(s2.objective, 99999.5, 1.0e-4)
+}
+
+///|
+test "47. [P1-2a] CPLEX .lp round-trip preserves positive and negative obj_constant" {
+  let m_pos = Model::new(Maximize)
+  let x = m_pos.add_continuous_var("x", lb=0.0, ub=4.0, obj=3.0)
+  let y = m_pos.add_continuous_var("y", lb=0.0, ub=5.0, obj=2.0)
+  m_pos.set_obj_constant(17.5)
+  m_pos.add_constraint("c1", [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 1.0, }], Le, 6.0)
+
+  let lp_pos = m_pos.to_lp_string()
+  let p_pos = parse_lp(lp_pos)
+  assert_approx(p_pos.obj_constant, 17.5, 1.0e-9)
+  let sol_orig = m_pos.solve()
+  let sol_rt = p_pos.solve()
+  assert_eq(sol_rt.status, Optimal)
+  assert_approx(sol_rt.objective, sol_orig.objective, 1.0e-6)
+
+  let m_neg = Model::new(Minimize)
+  let a = m_neg.add_continuous_var("a", lb=1.0, ub=5.0, obj=2.0)
+  m_neg.set_obj_constant(-12.25)
+  m_neg.add_constraint("c1", [{ var_id: a, coeff: 1.0, }], Ge, 2.0)
+  let p_neg = parse_lp(m_neg.to_lp_string())
+  assert_approx(p_neg.obj_constant, -12.25, 1.0e-9)
+  assert_approx(p_neg.solve().objective, m_neg.solve().objective, 1.0e-6)
+}
+
+///|
+test "48. [P1-2b] Netlib MPS round-trip preserves OBJSENSE MAX, obj_constant & fixed binaries" {
+  let m = Model::new(Maximize)
+  let b1 = m.add_binary_var("B1", obj=5.0)
+  let b2 = m.add_binary_var("B2", obj=3.0)
+  let x = m.add_continuous_var("X1", lb=0.0, ub=4.0, obj=2.0)
+  m.set_var_bounds(b1, 1.0, 1.0) // fixed binary = 1
+  m.set_var_bounds(b2, 0.0, 0.0) // fixed binary = 0
+  m.set_obj_constant(10.5)
+  m.add_constraint(
+    "CAP",
+    [{ var_id: b1, coeff: 1.0, }, { var_id: b2, coeff: 1.0, }, { var_id: x, coeff: 1.0, }],
+    Le,
+    3.0,
+  )
+
+  let sol1 = m.solve()
+  assert_eq(sol1.status, Optimal)
+  assert_approx(sol1.objective, 19.5, 1.0e-6)
+
+  let mps = m.to_mps_string(name="MAXFIX")
+  let parsed = parse_mps(mps)
+  assert_eq(parsed.sense, Maximize)
+  assert_approx(parsed.obj_constant, 10.5, 1.0e-9)
+  assert_approx(parsed.vars[0].lb, 1.0, 1.0e-9)
+  assert_approx(parsed.vars[0].ub, 1.0, 1.0e-9)
+  assert_approx(parsed.vars[1].lb, 0.0, 1.0e-9)
+  assert_approx(parsed.vars[1].ub, 0.0, 1.0e-9)
+
+  let sol2 = parsed.solve()
+  assert_eq(sol2.status, Optimal)
+  assert_true(parsed.verify_solution(sol2))
+  assert_approx(sol2.objective, 19.5, 1.0e-6)
+  assert_approx(sol2.primal[0], 1.0, 1.0e-6)
+  assert_approx(sol2.primal[1], 0.0, 1.0e-6)
+  assert_approx(sol2.primal[2], 2.0, 1.0e-6)
+}
+
+///|
+test "49. [P1-2c] solve_presolved recovers full original-space duals & passes KKT certificate" {
+  // Maximize 5*x + 4*y s.t.:
+  //   c0 (singleton binding ub): 2*x <= 6      -> x <= 3  (dual = 2.5? Wait: coupled with c2!)
+  //   c1 (singleton non-binding): y <= 10      -> dual = 0
+  //   c2 (multi-var binding): x + y <= 5       -> x=3, y=2, obj=23; dual(c2)=4, dual(c0)=0.5
+  //   c3 (singleton negative coeff binding lb): -2*y <= -2 -> y >= 1 (non-binding at y=2, dual=0)
+  let m = Model::new(Maximize)
+  let x = m.add_continuous_var("x", lb=0.0, obj=5.0)
+  let y = m.add_continuous_var("y", lb=0.0, obj=4.0)
+  m.add_constraint("c0_xub", [{ var_id: x, coeff: 2.0, }], Le, 6.0)
+  m.add_constraint("c1_yub", [{ var_id: y, coeff: 1.0, }], Le, 10.0)
+  m.add_constraint("c2_sum", [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 1.0, }], Le, 5.0)
+  m.add_constraint("c3_ylb", [{ var_id: y, coeff: -2.0, }], Le, -2.0)
+
+  let psol = m.solve_presolved()
+  assert_eq(psol.status, Optimal)
+  assert_eq(psol.dual.length(), 4)
+  assert_approx(psol.objective, 23.0, 1.0e-6)
+  assert_approx(psol.dual[0], 0.5, 1.0e-6)
+  assert_approx(psol.dual[1], 0.0, 1.0e-6)
+  assert_approx(psol.dual[2], 4.0, 1.0e-6)
+  assert_approx(psol.dual[3], 0.0, 1.0e-6)
+  let cert = m.certify_lp_solution(psol)
+  assert_true(cert.certified_optimal)
+
+  // Minimize 3*x + 2*y s.t. 2*x >= 4 (binding singleton lb), y = 3 (binding singleton eq)
+  // All constraints eliminated by presolve -> m_kept = 0!
+  let m2 = Model::new(Minimize)
+  let x2 = m2.add_continuous_var("x", lb=0.0, obj=3.0)
+  let y2 = m2.add_continuous_var("y", lb=0.0, obj=2.0)
+  m2.add_constraint("s_lb", [{ var_id: x2, coeff: 2.0, }], Ge, 4.0)
+  m2.add_constraint("s_eq", [{ var_id: y2, coeff: 1.0, }], Eq, 3.0)
+  let psol2 = m2.solve_presolved()
+  assert_eq(psol2.status, Optimal)
+  assert_eq(psol2.dual.length(), 2)
+  assert_approx(psol2.objective, 12.0, 1.0e-6)
+  assert_approx(psol2.dual[0], 1.5, 1.0e-6)
+  assert_approx(psol2.dual[1], 2.0, 1.0e-6)
+  assert_true(m2.certify_lp_solution(psol2).certified_optimal)
+}

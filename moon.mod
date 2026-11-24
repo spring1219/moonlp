@@ -1,6 +1,6 @@
 name = "spring1219/moonlp"
 
-version = "0.5.0"
+version = "0.6.0"
 
 readme = "README.md"
 

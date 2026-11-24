@@ -10,12 +10,19 @@ pub(all) struct PresolveReport {
 }
 
 ///|
-/// Tighten variable bounds from singleton constraints (a * x <= / >= / == b),
-/// round integer/binary bounds, and drop trivially redundant rows.
-pub fn Model::presolve(
+priv struct RemovedSingleton {
+  orig_idx : Int32
+  var_idx : Int32
+  coeff : Double
+  eff_rel : Relation
+  bound_val : Double
+}
+
+///|
+fn presolve_with_map(
   self : Model,
-  tol~ : Double = 1.0e-9,
-) -> (Model, PresolveReport) {
+  tol : Double,
+) -> (Model, PresolveReport, Array[Int32], Array[RemovedSingleton]) {
   let new_vars : Array[VarSpec] = []
   for i = 0; i < self.vars.length(); i = i + 1 {
     new_vars.push(self.vars[i])
@@ -23,6 +30,8 @@ pub fn Model::presolve(
   let mut tightened = 0
   let mut removed = 0
   let kept_constraints : Array[Constraint] = []
+  let kept_orig_indices : Array[Int32] = []
+  let removed_singletons : Array[RemovedSingleton] = []
 
   // First check existing bounds
   for i = 0; i < new_vars.length(); i = i + 1 {
@@ -35,6 +44,8 @@ pub fn Model::presolve(
           redundant_rows_removed: removed,
           infeasible_detected: true,
         },
+        kept_orig_indices,
+        removed_singletons,
       )
     }
   }
@@ -74,6 +85,8 @@ pub fn Model::presolve(
             redundant_rows_removed: removed,
             infeasible_detected: true,
           },
+          kept_orig_indices,
+          removed_singletons,
         )
       }
       removed = removed + 1
@@ -130,11 +143,21 @@ pub fn Model::presolve(
             redundant_rows_removed: removed,
             infeasible_detected: true,
           },
+          kept_orig_indices,
+          removed_singletons,
         )
       }
+      removed_singletons.push({
+        orig_idx: c_idx,
+        var_idx: single_var,
+        coeff: single_coeff,
+        eff_rel,
+        bound_val,
+      })
       removed = removed + 1
     } else {
       kept_constraints.push(c)
+      kept_orig_indices.push(c_idx)
     }
   }
 
@@ -150,18 +173,101 @@ pub fn Model::presolve(
       redundant_rows_removed: removed,
       infeasible_detected: false,
     },
+    kept_orig_indices,
+    removed_singletons,
   )
 }
 
 ///|
-/// Solve a Model after applying Presolve bound tightening & redundant-row elimination.
+/// Tighten variable bounds from singleton constraints (a * x <= / >= / == b),
+/// round integer/binary bounds, and drop trivially redundant rows.
+pub fn Model::presolve(
+  self : Model,
+  tol~ : Double = 1.0e-9,
+) -> (Model, PresolveReport) {
+  let (reduced, report, _, _) = presolve_with_map(self, tol)
+  (reduced, report)
+}
+
+///|
+/// Solve a Model after applying Presolve bound tightening & redundant-row elimination,
+/// recovering original-space dual shadow prices and reduced costs for LP models.
 pub fn Model::solve_presolved(
   self : Model,
   config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
-  let (reduced, report) = self.presolve(tol=config.tol)
+  let (reduced, report, kept_orig_indices, removed_singletons) = presolve_with_map(
+    self,
+    config.tol,
+  )
   if report.infeasible_detected {
     return Solution::empty(Infeasible, 0, 1)
   }
-  reduced.solve(config~)
+  let rsol = reduced.solve(config~)
+  if rsol.status != Optimal ||
+    self.has_integer_vars() ||
+    rsol.dual.length() != kept_orig_indices.length() {
+    return rsol
+  }
+
+  // Postsolve: map kept constraint duals back to original indices & recover singleton duals
+  let m_orig = self.constraints.length()
+  let n_orig = self.vars.length()
+  let orig_dual = Array::make(m_orig, 0.0)
+  for k = 0; k < kept_orig_indices.length(); k = k + 1 {
+    orig_dual[kept_orig_indices[k]] = rsol.dual[k]
+  }
+
+  let at_y = Array::make(n_orig, 0.0)
+  for k = 0; k < kept_orig_indices.length(); k = k + 1 {
+    let orig_i = kept_orig_indices[k]
+    let y_i = orig_dual[orig_i]
+    if y_i != 0.0 {
+      let c = self.constraints[orig_i]
+      for t_idx = 0; t_idx < c.terms.length(); t_idx = t_idx + 1 {
+        let t = c.terms[t_idx]
+        at_y[t.var_id.index] = at_y[t.var_id.index] + t.coeff * y_i
+      }
+    }
+  }
+
+  let sense_sign = match self.sense {
+    Minimize => 1.0
+    Maximize => -1.0
+  }
+  let orig_rc = Array::make(n_orig, 0.0)
+  for j = 0; j < n_orig; j = j + 1 {
+    let s_j = sense_sign * (self.vars[j].obj - at_y[j])
+    let orig_v = self.vars[j]
+    let red_v = reduced.vars[j]
+    let mut absorbed = false
+    if s_j > config.tol && red_v.lb > orig_v.lb + config.tol {
+      let btol = 1.0e-7 * (1.0 + red_v.lb.abs())
+      for r = 0; r < removed_singletons.length(); r = r + 1 {
+        let rs = removed_singletons[r]
+        if rs.var_idx == j &&
+          (rs.eff_rel == Ge || rs.eff_rel == Eq) &&
+          (rs.bound_val - red_v.lb).abs() <= btol {
+          orig_dual[rs.orig_idx] = s_j / (sense_sign * rs.coeff)
+          absorbed = true
+          break
+        }
+      }
+    } else if s_j < -config.tol && red_v.ub < orig_v.ub - config.tol {
+      let btol = 1.0e-7 * (1.0 + red_v.ub.abs())
+      for r = 0; r < removed_singletons.length(); r = r + 1 {
+        let rs = removed_singletons[r]
+        if rs.var_idx == j &&
+          (rs.eff_rel == Le || rs.eff_rel == Eq) &&
+          (rs.bound_val - red_v.ub).abs() <= btol {
+          orig_dual[rs.orig_idx] = s_j / (sense_sign * rs.coeff)
+          absorbed = true
+          break
+        }
+      }
+    }
+    orig_rc[j] = if absorbed { 0.0 } else { self.vars[j].obj - at_y[j] }
+  }
+
+  { ..rsol, dual: orig_dual, reduced_costs: orig_rc, }
 }

@@ -38,7 +38,7 @@ pub fn Model::matrix_scale_ratio(self : Model) -> Double {
     let terms = self.constraints[i].terms
     for k = 0; k < terms.length(); k = k + 1 {
       let a = terms[k].coeff.abs()
-      if a > 1.0e-15 {
+      if a > 1.0e-30 {
         if a < min_v {
           min_v = a
         }
@@ -113,13 +113,13 @@ pub fn Model::ruiz_scale(
     let dr = Array::make(m, 1.0)
     let dc = Array::make(n, 1.0)
     for i = 0; i < m; i = i + 1 {
-      if row_max[i] > 1.0e-12 {
+      if row_max[i] > 1.0e-30 {
         dr[i] = 1.0 / d_sqrt(row_max[i])
         r_acc[i] = r_acc[i] * dr[i]
       }
     }
     for j = 0; j < n; j = j + 1 {
-      if col_max[j] > 1.0e-12 {
+      if col_max[j] > 1.0e-30 {
         dc[j] = 1.0 / d_sqrt(col_max[j])
         c_acc[j] = c_acc[j] * dc[j]
       }
@@ -190,7 +190,11 @@ pub fn Model::solve_scaled(
   config~ : SolverConfig = SolverConfig::default(),
 ) -> (Solution, ScalingReport) {
   let (scaled, rep) = self.ruiz_scale(passes~)
-  let ssol = scaled.solve(config~)
+  let ssol = if scaled.has_integer_vars() {
+    solve_milp(scaled, config~)
+  } else {
+    solve_lp_unscaled(scaled, config)
+  }
   if ssol.status != Optimal {
     return (ssol, rep)
   }
