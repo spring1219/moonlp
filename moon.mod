@@ -1,6 +1,6 @@
 name = "spring1219/moonlp"
 
-version = "0.2.0"
+version = "0.3.0"
 
 readme = "README.md"
 
@@ -11,6 +11,8 @@ license = "Apache-2.0"
 keywords = [
   "linear-programming",
   "simplex",
+  "dual-simplex",
+  "gomory-cuts",
   "milp",
   "optimization",
   "operations-research",
@@ -19,6 +21,6 @@ keywords = [
   "cplex-lp",
 ]
 
-description = "Pure MoonBit Linear & Mixed-Integer Linear Programming (LP/MILP) Solver: Two-Phase Simplex with Bland Anti-Cycling, Branch-and-Bound, Presolve, KKT Strong Duality Certificates, and CPLEX .lp / Netlib .mps Parsers."
+description = "Pure MoonBit Linear & Mixed-Integer Linear Programming (LP/MILP) Solver: Two-Phase Primal & Dual Simplex, Bland Anti-Cycling, Gomory Mixed-Integer (GMI) Cutting Planes, Branch-and-Bound, Presolve, KKT Strong Duality Certificates, Sensitivity Analysis, and CPLEX .lp / Netlib .mps Parsers."
 
 source = "src"

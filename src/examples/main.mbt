@@ -138,4 +138,29 @@ fn main {
       println("    ----+----")
     }
   }
+
+  // 4. Gomory Mixed-Integer (GMI) Cuts + Dual Simplex root-node solve
+  let gm = @moonlp.Model::new(Maximize)
+  let gx1 = gm.add_int_var("x1", obj=7.0)
+  let gx2 = gm.add_int_var("x2", obj=9.0)
+  gm.add_constraint(
+    "c1",
+    [{ var_id: gx1, coeff: -1.0, }, { var_id: gx2, coeff: 3.0, }],
+    Le,
+    6.0,
+  )
+  gm.add_constraint(
+    "c2",
+    [{ var_id: gx1, coeff: 7.0, }, { var_id: gx2, coeff: 1.0, }],
+    Le,
+    35.0,
+  )
+  let (gsol, grep) = @moonlp.solve_milp_with_cuts(gm)
+  println("\n[4] Gomory Mixed-Integer (GMI) Cuts + Dual Simplex (Max 7*x1 + 9*x2)")
+  println(
+    "    Root LP = \{grep.root_lp_obj} -> Integer Optimum = \{gsol.objective} (x1=\{gsol.primal[0]}, x2=\{gsol.primal[1]})",
+  )
+  println(
+    "    GMI Cuts Added = \{grep.cuts_added} | Dual Pivots = \{grep.dual_pivots} | Solved at Root = \{grep.solved_at_root}",
+  )
 }

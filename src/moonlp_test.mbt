@@ -860,3 +860,234 @@ test "25. LP blending & linear expression builder (LinearExpr) end-to-end" {
   assert_approx(sol.primal[y.index], 40.0, 1.0e-6)
   assert_approx(sol.objective, 340.0, 1.0e-6)
 }
+
+///|
+test "26. Dual Simplex direct solve on >= Diet LP without Phase I" {
+  let m = Model::new(Minimize)
+  let x1 = m.add_continuous_var("x1", obj=0.6)
+  let x2 = m.add_continuous_var("x2", obj=0.35)
+  m.add_constraint(
+    "vitA",
+    [{ var_id: x1, coeff: 5.0, }, { var_id: x2, coeff: 7.0, }],
+    Ge,
+    8.0,
+  )
+  m.add_constraint(
+    "vitB",
+    [{ var_id: x1, coeff: 4.0, }, { var_id: x2, coeff: 2.0, }],
+    Ge,
+    15.0,
+  )
+  m.add_constraint(
+    "vitC",
+    [{ var_id: x1, coeff: 2.0, }, { var_id: x2, coeff: 1.0, }],
+    Ge,
+    3.0,
+  )
+
+  let sol_dual = solve_lp_dual(m)
+  assert_eq(sol_dual.status, Optimal)
+  assert_true(m.verify_solution(sol_dual))
+  assert_approx(sol_dual.objective, 2.25, 1.0e-7)
+  let cert = m.certify_lp_solution(sol_dual)
+  assert_true(cert.certified_optimal)
+  assert_true(cert.duality_gap < 1.0e-7)
+}
+
+///|
+test "27. Dual Simplex primal infeasibility detection" {
+  let m = Model::new(Minimize)
+  let x = m.add_continuous_var("x", obj=1.0)
+  let y = m.add_continuous_var("y", obj=2.0)
+  m.add_constraint(
+    "c1",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 1.0, }],
+    Le,
+    2.0,
+  )
+  m.add_constraint(
+    "c2",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 1.0, }],
+    Ge,
+    6.0,
+  )
+  let sol = solve_lp_dual(m)
+  assert_eq(sol.status, Infeasible)
+}
+
+///|
+test "28. Gomory Mixed-Integer (GMI) cuts + Dual Simplex solve classic IP at root" {
+  // Maximize 5*x + 8*y s.t. x + y <= 6, 5*x + 9*y <= 45, x,y >= 0 integer
+  // Pure B&B takes 9 nodes; GMI cuts + Dual Simplex solve it right at the root (1 node)!
+  let m = Model::new(Maximize)
+  let x = m.add_int_var("x", obj=5.0)
+  let y = m.add_int_var("y", obj=8.0)
+  m.add_constraint(
+    "c1",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 1.0, }],
+    Le,
+    6.0,
+  )
+  m.add_constraint(
+    "c2",
+    [{ var_id: x, coeff: 5.0, }, { var_id: y, coeff: 9.0, }],
+    Le,
+    45.0,
+  )
+
+  let (sol, rep) = solve_milp_with_cuts(m)
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol))
+  assert_approx(sol.objective, 40.0, 1.0e-6)
+  assert_true(rep.cuts_added > 0)
+  assert_true(rep.solved_at_root)
+  assert_eq(sol.nodes_explored, 1)
+}
+
+///|
+test "29. GMI cuts close large LP-to-IP gap (63.0 -> 55.0) at root in 2 cuts" {
+  // Maximize 7*x1 + 9*x2 s.t. -x1 + 3*x2 <= 6, 7*x1 + x2 <= 35, x1,x2 >= 0 integer
+  let m = Model::new(Maximize)
+  let x1 = m.add_int_var("x1", obj=7.0)
+  let x2 = m.add_int_var("x2", obj=9.0)
+  m.add_constraint(
+    "c1",
+    [{ var_id: x1, coeff: -1.0, }, { var_id: x2, coeff: 3.0, }],
+    Le,
+    6.0,
+  )
+  m.add_constraint(
+    "c2",
+    [{ var_id: x1, coeff: 7.0, }, { var_id: x2, coeff: 1.0, }],
+    Le,
+    35.0,
+  )
+
+  let (sol, rep) = solve_milp_with_cuts(m)
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol))
+  assert_approx(rep.root_lp_obj, 63.0, 1.0e-6)
+  assert_approx(sol.objective, 55.0, 1.0e-6)
+  assert_approx(sol.primal[x1.index], 4.0, 1.0e-6)
+  assert_approx(sol.primal[x2.index], 3.0, 1.0e-6)
+  assert_true(rep.solved_at_root)
+  assert_eq(sol.nodes_explored, 1)
+}
+
+///|
+test "30. GMI cut solves true Mixed Integer-Continuous MILP (x int, y cont) in 1 cut" {
+  // Maximize 5*x + 4*y s.t. x + y <= 5, 10*x + 6*y <= 45, x integer, y continuous
+  // LP opt = 23.75 (x=3.75, y=1.25); Mixed IP opt = 23.333333 (x=4, y=5/6)
+  let m = Model::new(Maximize)
+  let x = m.add_int_var("x", obj=5.0)
+  let y = m.add_continuous_var("y", obj=4.0)
+  m.add_constraint(
+    "c1",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 1.0, }],
+    Le,
+    5.0,
+  )
+  m.add_constraint(
+    "c2",
+    [{ var_id: x, coeff: 10.0, }, { var_id: y, coeff: 6.0, }],
+    Le,
+    45.0,
+  )
+
+  let (sol, rep) = solve_milp_with_cuts(m)
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol))
+  assert_approx(rep.root_lp_obj, 23.75, 1.0e-6)
+  assert_approx(sol.objective, 70.0 / 3.0, 1.0e-5)
+  assert_approx(sol.primal[x.index], 4.0, 1.0e-6)
+  assert_approx(sol.primal[y.index], 5.0 / 6.0, 1.0e-5)
+  assert_true(rep.solved_at_root)
+  assert_eq(rep.cuts_added, 1)
+}
+
+///|
+test "31. 3x3 Transportation LP (9 variables) + KKT strong duality" {
+  let supply = [20.0, 30.0, 25.0]
+  let demand = [15.0, 35.0, 25.0]
+  let costs = [[8.0, 6.0, 10.0], [9.0, 12.0, 13.0], [14.0, 9.0, 16.0]]
+  let m = Model::new(Minimize)
+  let x : Array[Array[VarId]] = []
+  for i = 0; i < 3; i = i + 1 {
+    let row : Array[VarId] = []
+    for j = 0; j < 3; j = j + 1 {
+      row.push(
+        m.add_continuous_var(
+          "x_" + i.to_string() + "_" + j.to_string(),
+          obj=costs[i][j],
+        ),
+      )
+    }
+    x.push(row)
+  }
+  for i = 0; i < 3; i = i + 1 {
+    m.add_constraint(
+      "sup_" + i.to_string(),
+      [
+        { var_id: x[i][0], coeff: 1.0, },
+        { var_id: x[i][1], coeff: 1.0, },
+        { var_id: x[i][2], coeff: 1.0, },
+      ],
+      Le,
+      supply[i],
+    )
+  }
+  for j = 0; j < 3; j = j + 1 {
+    m.add_constraint(
+      "dem_" + j.to_string(),
+      [
+        { var_id: x[0][j], coeff: 1.0, },
+        { var_id: x[1][j], coeff: 1.0, },
+        { var_id: x[2][j], coeff: 1.0, },
+      ],
+      Ge,
+      demand[j],
+    )
+  }
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol))
+  assert_approx(sol.objective, 715.0, 1.0e-6)
+  let cert = m.certify_lp_solution(sol)
+  assert_true(cert.certified_optimal)
+}
+
+///|
+test "32. 4-period capacitated lot-sizing MILP (setup binary + continuous flow)" {
+  let dem = [10.0, 15.0, 20.0, 12.0]
+  let ucost = [3.0, 4.0, 3.0, 5.0]
+  let cap = 30.0
+  let m = Model::new(Minimize)
+  let y : Array[VarId] = []
+  let p : Array[VarId] = []
+  let inv : Array[VarId] = []
+  for t = 0; t < 4; t = t + 1 {
+    y.push(m.add_binary_var("y" + t.to_string(), obj=50.0))
+    p.push(m.add_continuous_var("p" + t.to_string(), ub=cap, obj=ucost[t]))
+    inv.push(m.add_continuous_var("I" + t.to_string(), obj=1.0))
+  }
+  for t = 0; t < 4; t = t + 1 {
+    let terms : Array[Term] = [
+      { var_id: p[t], coeff: 1.0, },
+      { var_id: inv[t], coeff: -1.0, },
+    ]
+    if t > 0 {
+      terms.push({ var_id: inv[t - 1], coeff: 1.0, })
+    }
+    m.add_constraint("bal" + t.to_string(), terms, Eq, dem[t])
+    m.add_constraint(
+      "cap" + t.to_string(),
+      [{ var_id: p[t], coeff: 1.0, }, { var_id: y[t], coeff: -cap, }],
+      Le,
+      0.0,
+    )
+  }
+  let (sol_cut, _) = solve_milp_with_cuts(m)
+  assert_eq(sol_cut.status, Optimal)
+  assert_true(m.verify_solution(sol_cut))
+  assert_approx(sol_cut.objective, 302.0, 1.0e-5)
+}
