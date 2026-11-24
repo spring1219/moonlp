@@ -128,7 +128,7 @@ pub fn solve_lp_dual(
     if v.lb < -inf_threshold || v.ub < inf_threshold {
       return solve_lp(model, config~)
     }
-    if v.obj * sense_sign < -config.tol {
+    if v.obj * sense_sign < -simplex_price_tol(config) {
       return solve_lp(model, config~)
     }
   }

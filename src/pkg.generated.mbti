@@ -1,18 +1,38 @@
 // Generated using `moon info`, DON'T EDIT IT
-package "moonlp/moonlp"
+package "spring1219/moonlp"
 
 import {
   "moonbitlang/core/debug",
 }
 
 // Values
+pub fn build_tsp5_mtz_model() -> Model
+
+pub fn highs_avgas_mps() -> String
+
+pub fn highs_small_mip_mps() -> String
+
+pub fn miplib_flugpl_mps() -> String
+
+pub fn netlib_adlittle_mps() -> String
+
+pub fn netlib_afiro_mps() -> String
+
 pub fn parse_lp(String) -> Model raise ParseError
 
 pub fn parse_mps(String, sense? : Sense) -> Model raise ParseError
 
 pub fn solve_lp(Model, config? : SolverConfig) -> Solution
 
+pub fn solve_lp_dual(Model, config? : SolverConfig) -> Solution
+
 pub fn solve_milp(Model, config? : SolverConfig) -> Solution
+
+pub fn solve_milp_branch_and_cut(Model, max_root_cuts? : Int32, config? : SolverConfig) -> (Solution, BranchAndCutStats)
+
+pub fn solve_milp_warm(Model, config? : SolverConfig) -> Solution
+
+pub fn solve_milp_with_cuts(Model, max_cuts? : Int32, config? : SolverConfig) -> (Solution, GmiCutReport)
 
 // Errors
 #derive(Eq, @debug.Debug)
@@ -22,11 +42,41 @@ pub suberror ParseError {
 
 // Types and methods
 #derive(@debug.Debug)
+pub(all) struct BranchAndCutStats {
+  root_lp_obj : Double
+  post_cut_lp_obj : Double
+  cuts_added : Int32
+  heuristic_hits : Int32
+  nodes_explored : Int32
+  total_pivots : Int32
+}
+
+#derive(@debug.Debug)
 pub(all) struct Constraint {
   name : String
   terms : Array[Term]
   relation : Relation
   rhs : Double
+}
+
+#derive(@debug.Debug)
+pub(all) struct ConstraintSensitivity {
+  name : String
+  relation : Relation
+  rhs : Double
+  lhs : Double
+  slack : Double
+  binding : Bool
+  shadow_price : Double
+}
+
+#derive(@debug.Debug)
+pub(all) struct GmiCutReport {
+  cuts_added : Int32
+  root_lp_obj : Double
+  cut_lp_obj : Double
+  dual_pivots : Int32
+  solved_at_root : Bool
 }
 
 #derive(@debug.Debug)
@@ -55,13 +105,18 @@ pub fn Model::add_continuous_var(Self, String, lb? : Double, ub? : Double, obj? 
 pub fn Model::add_expr_constraint(Self, String, LinearExpr, Relation, Double) -> Unit
 pub fn Model::add_int_var(Self, String, lb? : Double, ub? : Double, obj? : Double) -> VarId
 pub fn Model::add_var(Self, String, lb? : Double, ub? : Double, kind? : VarKind, obj? : Double) -> VarId
+pub fn Model::analyze_constraints(Self, Solution, tol? : Double) -> Array[ConstraintSensitivity]
+pub fn Model::analyze_variables(Self, Solution, tol? : Double) -> Array[VarSensitivity]
 pub fn Model::certify_lp_solution(Self, Solution, tol? : Double) -> OptimalityCertificate
 pub fn Model::clone_with_bounds(Self, Array[Double], Array[Double]) -> Self
 pub fn Model::has_integer_vars(Self) -> Bool
+pub fn Model::matrix_scale_ratio(Self) -> Double
 pub fn Model::new(Sense) -> Self
 pub fn Model::num_constraints(Self) -> Int32
 pub fn Model::num_vars(Self) -> Int32
 pub fn Model::presolve(Self, tol? : Double) -> (Self, PresolveReport)
+pub fn Model::rhs_perturbation_delta(Self, Solution, Int32, Double, config? : SolverConfig) -> Double?
+pub fn Model::ruiz_scale(Self, passes? : Int32) -> (Self, ScalingReport)
 pub fn Model::set_obj_constant(Self, Double) -> Unit
 pub fn Model::set_objective(Self, LinearExpr) -> Unit
 pub fn Model::set_sense(Self, Sense) -> Unit
@@ -69,13 +124,17 @@ pub fn Model::set_var_bounds(Self, VarId, Double, Double) -> Unit
 pub fn Model::set_var_obj(Self, VarId, Double) -> Unit
 pub fn Model::solve(Self, config? : SolverConfig) -> Solution
 pub fn Model::solve_presolved(Self, config? : SolverConfig) -> Solution
+pub fn Model::solve_scaled(Self, passes? : Int32, config? : SolverConfig) -> (Solution, ScalingReport)
 pub fn Model::to_lp_string(Self) -> String
+pub fn Model::to_mps_string(Self, name? : String) -> String
 pub fn Model::verify_solution(Self, Solution, tol? : Double) -> Bool
 
 #derive(@debug.Debug)
 pub(all) struct OptimalityCertificate {
   primal_feasible : Bool
+  dual_feasible : Bool
   max_primal_violation : Double
+  max_dual_violation : Double
   max_complementarity_error : Double
   primal_objective : Double
   dual_objective : Double
@@ -95,6 +154,15 @@ pub(all) enum Relation {
   Le
   Ge
   Eq
+}
+
+#derive(@debug.Debug)
+pub(all) struct ScalingReport {
+  original_ratio : Double
+  scaled_ratio : Double
+  passes : Int32
+  row_scales : Array[Double]
+  col_scales : Array[Double]
 }
 
 #derive(Eq, @debug.Debug)
@@ -132,8 +200,10 @@ pub(all) enum Status {
   Optimal
   Infeasible
   Unbounded
+  InfeasibleOrUnbounded
   MaxIterations
   NodeLimit
+  NumericalError
 }
 
 #derive(Eq, @debug.Debug)
@@ -152,6 +222,15 @@ pub(all) enum VarKind {
   Continuous
   Integer
   Binary
+}
+
+#derive(@debug.Debug)
+pub(all) struct VarSensitivity {
+  name : String
+  value : Double
+  reduced_cost : Double
+  at_lower_bound : Bool
+  at_upper_bound : Bool
 }
 
 #derive(@debug.Debug)

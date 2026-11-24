@@ -454,16 +454,9 @@ pub fn solve_milp_branch_and_cut(
     if -tab[m][rhs_col] > config.tol {
       return (Solution::empty(Infeasible, total_pivots, 1), empty_stats)
     }
-    for i = 0; i < m; i = i + 1 {
-      if is_artificial[basis[i]] {
-        for j = 0; j < num_cols; j = j + 1 {
-          if col_active[j] && !is_artificial[j] && tab[i][j].abs() > config.tol {
-            pivot_tableau(tab, basis, m, rhs_col, i, j)
-            break
-          }
-        }
-      }
-    }
+    drive_out_artificials(
+      tab, basis, col_active, is_artificial, m, num_cols, config,
+    )
     for j = 0; j < num_cols; j = j + 1 {
       if is_artificial[j] {
         col_active[j] = false

@@ -311,16 +311,9 @@ pub fn solve_milp_warm(
     if -tab[m_total][rhs_col] > config.tol {
       return Solution::empty(Infeasible, total_iters, 1)
     }
-    for i = 0; i < m_total; i = i + 1 {
-      if is_artificial[basis[i]] {
-        for j = 0; j < num_cols; j = j + 1 {
-          if col_active[j] && !is_artificial[j] && tab[i][j].abs() > config.tol {
-            pivot_tableau(tab, basis, m_total, rhs_col, i, j)
-            break
-          }
-        }
-      }
-    }
+    drive_out_artificials(
+      tab, basis, col_active, is_artificial, m_total, num_cols, config,
+    )
     for j = 0; j < num_cols; j = j + 1 {
       if is_artificial[j] {
         col_active[j] = false

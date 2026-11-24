@@ -80,6 +80,52 @@ fn pivot_tableau(
 }
 
 ///|
+/// Pricing and Phase-I artificial-pivot tolerance, decoupled from large primal
+/// feasibility `config.tol` so relaxed feasibility tolerances do not halt Phase I
+/// or Phase II early on small nonzero reduced costs / pivots.
+fn simplex_price_tol(config : SolverConfig) -> Double {
+  if config.tol < 1.0e-12 {
+    config.tol
+  } else {
+    1.0e-12
+  }
+}
+
+///|
+/// Drive degenerate artificial variables out of the basis after Phase I using
+/// maximum-magnitude non-artificial pivoting above `simplex_price_tol(config)`.
+fn drive_out_artificials(
+  tab : Array[Array[Double]],
+  basis : Array[Int32],
+  col_active : Array[Bool],
+  is_artificial : Array[Bool],
+  m : Int32,
+  num_cols : Int32,
+  config : SolverConfig,
+) -> Unit {
+  let rhs_col = num_cols
+  let art_pivot_tol = simplex_price_tol(config)
+  for i = 0; i < m; i = i + 1 {
+    if is_artificial[basis[i]] {
+      let mut pivot_col = -1
+      let mut best_abs = art_pivot_tol
+      for j = 0; j < num_cols; j = j + 1 {
+        if col_active[j] && !is_artificial[j] {
+          let a = tab[i][j].abs()
+          if a > best_abs {
+            best_abs = a
+            pivot_col = j
+          }
+        }
+      }
+      if pivot_col != -1 {
+        pivot_tableau(tab, basis, m, rhs_col, i, pivot_col)
+      }
+    }
+  }
+}
+
+///|
 /// Run simplex iterations on the current tableau objective row `m`.
 /// Returns (status, iterations_used).
 fn run_simplex_phase(
@@ -96,6 +142,7 @@ fn run_simplex_phase(
   let mut prev_obj = tab[m][rhs_col]
   let nz_cols : Array[Int32] = []
   let nz_vals : Array[Double] = []
+  let price_tol = simplex_price_tol(config)
 
   while iters < config.max_iters {
     let use_bland = stall_count >= config.bland_stall_limit
@@ -103,13 +150,13 @@ fn run_simplex_phase(
 
     // 1. Choose entering column
     let mut enter_col = -1
-    let mut best_rc = -config.tol
+    let mut best_rc = -price_tol
     for j = 0; j < num_cols; j = j + 1 {
       if !col_active[j] {
         continue
       }
       let rc = obj_row[j]
-      if rc < -config.tol {
+      if rc < -price_tol {
         if use_bland {
           enter_col = j
           break
@@ -345,8 +392,9 @@ fn solve_lp_unscaled(
 
   // Handle unconstrained trivial case (0 rows)
   if m_total == 0 {
+    let price_tol = simplex_price_tol(config)
     for j = 0; j < n_std; j = j + 1 {
-      if std_obj[j] < -config.tol {
+      if std_obj[j] < -price_tol {
         return Solution::empty(Unbounded, 0, 1)
       }
     }
@@ -547,20 +595,9 @@ fn solve_lp_unscaled(
     }
 
     // Drive degenerate artificial variables out of basis where possible
-    for i = 0; i < m_total; i = i + 1 {
-      if is_artificial[basis[i]] {
-        let mut pivot_col = -1
-        for j = 0; j < num_cols; j = j + 1 {
-          if !is_artificial[j] && tab[i][j].abs() > config.tol {
-            pivot_col = j
-            break
-          }
-        }
-        if pivot_col != -1 {
-          pivot_tableau(tab, basis, m_total, rhs_col, i, pivot_col)
-        }
-      }
-    }
+    drive_out_artificials(
+      tab, basis, col_active, is_artificial, m_total, num_cols, config,
+    )
 
     // Deactivate all artificial columns for Phase II (columns remain updated for dual extraction)
     for j = 0; j < num_cols; j = j + 1 {
