@@ -30,6 +30,7 @@ pub(all) enum Status {
   Optimal
   Infeasible
   Unbounded
+  InfeasibleOrUnbounded
   MaxIterations
   NodeLimit
 }
@@ -193,6 +194,12 @@ pub fn LinearExpr::sub_expr(
 #derive(Debug, Eq)
 pub suberror ParseError {
   ParseError(String)
+}
+
+///|
+/// Exact IEEE-754 finiteness check (rejects NaN and +/-Infinity).
+fn is_finite_double(x : Double) -> Bool {
+  x == x && x < 1.0e308 && x > -1.0e308
 }
 
 ///|

@@ -244,7 +244,10 @@ pub fn solve_milp_with_cuts(
     }
     let (p1_st, p1_it) = run_simplex_phase(tab, basis, col_active, m, num_cols, config)
     total_iters = total_iters + p1_it
-    if p1_st != Optimal || -tab[m][rhs_col] > config.tol * 100.0 {
+    if p1_st != Optimal {
+      return (Solution::empty(p1_st, total_iters, 1), empty_report)
+    }
+    if -tab[m][rhs_col] > config.tol * 100.0 {
       return (Solution::empty(Infeasible, total_iters, 1), empty_report)
     }
     for i = 0; i < m; i = i + 1 {
@@ -284,6 +287,16 @@ pub fn solve_milp_with_cuts(
 
   let (p2_st, p2_it) = run_simplex_phase(tab, basis, col_active, m, num_cols, config)
   total_iters = total_iters + p2_it
+  if p2_st == Unbounded {
+    return (
+      Solution::empty(
+        resolve_unbounded_milp_status(model, config),
+        total_iters,
+        1,
+      ),
+      empty_report,
+    )
+  }
   if p2_st != Optimal {
     return (Solution::empty(p2_st, total_iters, 1), empty_report)
   }
@@ -403,6 +416,18 @@ pub fn solve_milp_with_cuts(
         },
       )
     }
+    if dst == MaxIterations {
+      return (
+        Solution::empty(MaxIterations, total_iters, 1),
+        {
+          cuts_added,
+          root_lp_obj,
+          cut_lp_obj: (-tab[m][rhs_col] + obj_offset) * sense_sign,
+          dual_pivots,
+          solved_at_root: false,
+        },
+      )
+    }
     if dst != Optimal {
       break
     }
@@ -411,43 +436,37 @@ pub fn solve_milp_with_cuts(
   let cut_lp_obj = (-tab[m][rhs_col] + obj_offset) * sense_sign
 
   if is_integral {
-    let primal = Array::make(n_orig, 0.0)
+    let raw_primal = Array::make(n_orig, 0.0)
     for j = 0; j < n_orig; j = j + 1 {
-      primal[j] = lbs[j]
+      raw_primal[j] = lbs[j]
     }
     for i = 0; i < m; i = i + 1 {
       let bc = basis[i]
       if bc >= 0 && bc < n_std {
-        let raw = lbs[bc] + tab[i][rhs_col]
-        primal[bc] = if is_int_col[bc] { d_round(raw) } else { raw }
+        raw_primal[bc] = lbs[bc] + tab[i][rhs_col]
       }
     }
-    let mut exact_obj = model.obj_constant
-    for j = 0; j < n_orig; j = j + 1 {
-      exact_obj = exact_obj + model.vars[j].obj * primal[j]
-    }
-    let root_sol : Solution = {
-      status: Optimal,
-      objective: exact_obj,
-      primal,
-      dual: [],
-      reduced_costs: [],
-      iterations: total_iters,
-      nodes_explored: 1,
-      mip_gap: 0.0,
-    }
-    // Safety verification: guarantee 100% primal feasibility before accepting root cut solution
-    if model.verify_solution(root_sol, tol=1.0e-5) {
-      return (
-        root_sol,
-        {
-          cuts_added,
-          root_lp_obj,
-          cut_lp_obj: exact_obj,
-          dual_pivots,
-          solved_at_root: true,
-        },
-      )
+    match verify_or_repair_int_candidate(model, raw_primal, config) {
+      Some(cand) => {
+        let root_sol : Solution = {
+          ..cand,
+          status: Optimal,
+          iterations: total_iters,
+          nodes_explored: 1,
+          mip_gap: 0.0,
+        }
+        return (
+          root_sol,
+          {
+            cuts_added,
+            root_lp_obj,
+            cut_lp_obj: cand.objective,
+            dual_pivots,
+            solved_at_root: true,
+          },
+        )
+      }
+      None => ()
     }
   }
 

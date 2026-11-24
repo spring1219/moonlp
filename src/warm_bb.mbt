@@ -291,7 +291,10 @@ pub fn solve_milp_warm(
       tab, basis, col_active, m_total, num_cols, config,
     )
     total_iters = total_iters + p1_it
-    if p1_st != Optimal || -tab[m_total][rhs_col] > config.tol * 100.0 {
+    if p1_st != Optimal {
+      return Solution::empty(p1_st, total_iters, 1)
+    }
+    if -tab[m_total][rhs_col] > config.tol * 100.0 {
       return Solution::empty(Infeasible, total_iters, 1)
     }
     for i = 0; i < m_total; i = i + 1 {
@@ -332,6 +335,13 @@ pub fn solve_milp_warm(
     tab, basis, col_active, m_total, num_cols, config,
   )
   total_iters = total_iters + p2_it
+  if p2_st == Unbounded {
+    return Solution::empty(
+      resolve_unbounded_milp_status(model, config),
+      total_iters,
+      1,
+    )
+  }
   if p2_st != Optimal {
     return Solution::empty(p2_st, total_iters, 1)
   }
@@ -344,6 +354,8 @@ pub fn solve_milp_warm(
   let mut best_min_obj = 1.0e308
   let mut best_sol : Solution? = None
   let mut nodes_explored = 0
+  let mut hit_max_iters = false
+  let mut has_unproved = false
 
   while queue.length() > 0 && nodes_explored < config.max_nodes {
     let node = pop_best_warm_node(queue)
@@ -363,6 +375,11 @@ pub fn solve_milp_warm(
     nodes_explored = nodes_explored + 1
     total_iters = total_iters + dit
 
+    if dst == MaxIterations {
+      hit_max_iters = true
+      has_unproved = true
+      continue
+    }
     if dst != Optimal {
       continue
     }
@@ -388,37 +405,49 @@ pub fn solve_milp_warm(
     }
 
     if branch_row == -1 {
-      // Integral solution found!
-      let primal = Array::make(n_orig, 0.0)
+      let raw_primal = Array::make(n_orig, 0.0)
       for j = 0; j < n_orig; j = j + 1 {
-        primal[j] = lbs[j]
+        raw_primal[j] = lbs[j]
       }
       for i = 0; i < node.m; i = i + 1 {
         let bc = node.basis[i]
         if bc >= 0 && bc < n_std {
-          let raw = lbs[bc] + node.tab[i][node.num_cols]
-          primal[bc] = if is_int_col[bc] { d_round(raw) } else { raw }
+          raw_primal[bc] = lbs[bc] + node.tab[i][node.num_cols]
         }
       }
-      let mut exact_obj = model.obj_constant
-      for j = 0; j < n_orig; j = j + 1 {
-        exact_obj = exact_obj + model.vars[j].obj * primal[j]
+      match verify_or_repair_int_candidate(model, raw_primal, config) {
+        Some(cand) =>
+          if cand.objective * sense_sign < best_min_obj {
+            best_min_obj = cand.objective * sense_sign
+            best_sol = Some({
+              ..cand,
+              iterations: total_iters,
+              nodes_explored,
+              mip_gap: 0.0,
+            })
+          }
+        None => {
+          // Sub-tolerance fractionality broke a large-coefficient constraint: branch on it!
+          let mut sub_dist = 0.0
+          for i = 0; i < node.m; i = i + 1 {
+            let bc = node.basis[i]
+            if bc >= 0 && bc < n_std && is_int_col[bc] {
+              let val = node.tab[i][node.num_cols]
+              let dist = (val - d_round(val)).abs()
+              if dist > 1.0e-12 && dist > sub_dist {
+                sub_dist = dist
+                branch_row = i
+              }
+            }
+          }
+          if branch_row == -1 {
+            has_unproved = true
+          }
+        }
       }
-      let cand : Solution = {
-        status: Optimal,
-        objective: exact_obj,
-        primal,
-        dual: [],
-        reduced_costs: [],
-        iterations: total_iters,
-        nodes_explored,
-        mip_gap: 0.0,
-      }
-      if model.verify_solution(cand, tol=1.0e-5) {
-        best_min_obj = exact_obj * sense_sign
-        best_sol = Some(cand)
-      }
-    } else {
+    }
+
+    if branch_row != -1 {
       let val = node.tab[branch_row][node.num_cols]
       let fl = d_floor(val)
       let cl = d_ceil(val)
@@ -430,13 +459,16 @@ pub fn solve_milp_warm(
 
   match best_sol {
     Some(sol) =>
-      if queue.length() == 0 {
-        { ..sol, iterations: total_iters, nodes_explored, mip_gap: 0.0, }
+      if queue.length() == 0 && !has_unproved {
+        { ..sol, status: Optimal, iterations: total_iters, nodes_explored, mip_gap: 0.0, }
       } else {
-        let mut best_rem = queue[0].bound
-        for i = 1; i < queue.length(); i = i + 1 {
-          if queue[i].bound < best_rem {
-            best_rem = queue[i].bound
+        let mut best_rem = best_min_obj
+        if queue.length() > 0 {
+          best_rem = queue[0].bound
+          for i = 1; i < queue.length(); i = i + 1 {
+            if queue[i].bound < best_rem {
+              best_rem = queue[i].bound
+            }
           }
         }
         let denom = if best_min_obj.abs() > 1.0e-9 {
@@ -444,17 +476,24 @@ pub fn solve_milp_warm(
         } else {
           1.0
         }
-        let gap = (best_min_obj - best_rem).abs() / denom
-        {
-          ..sol,
-          status: if gap <= config.mip_gap_tol { Optimal } else { NodeLimit },
-          iterations: total_iters,
-          nodes_explored,
-          mip_gap: gap,
+        let gap = if has_unproved && queue.length() == 0 {
+          1.0
+        } else {
+          (best_min_obj - best_rem).abs() / denom
         }
+        let st = if !has_unproved && gap <= config.mip_gap_tol {
+          Optimal
+        } else if hit_max_iters && nodes_explored < config.max_nodes {
+          MaxIterations
+        } else {
+          NodeLimit
+        }
+        { ..sol, status: st, iterations: total_iters, nodes_explored, mip_gap: gap, }
       }
     None =>
-      if nodes_explored >= config.max_nodes {
+      if hit_max_iters {
+        Solution::empty(MaxIterations, total_iters, nodes_explored)
+      } else if nodes_explored >= config.max_nodes || has_unproved {
         Solution::empty(NodeLimit, total_iters, nodes_explored)
       } else {
         Solution::empty(Infeasible, total_iters, nodes_explored)

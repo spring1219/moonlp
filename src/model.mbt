@@ -191,9 +191,15 @@ pub fn Model::verify_solution(
   if sol.primal.length() != self.vars.length() {
     return false
   }
+  if !is_finite_double(sol.objective) {
+    return false
+  }
   let mut obj_val = self.obj_constant
   for i = 0; i < self.vars.length(); i = i + 1 {
     let x = sol.primal[i]
+    if !is_finite_double(x) {
+      return false
+    }
     let v = self.vars[i]
     if x < v.lb - tol || x > v.ub + tol {
       return false
@@ -209,7 +215,8 @@ pub fn Model::verify_solution(
     }
     obj_val = obj_val + v.obj * x
   }
-  if (obj_val - sol.objective).abs() > tol * (1.0 + obj_val.abs()) {
+  if !is_finite_double(obj_val) ||
+    (obj_val - sol.objective).abs() > tol * (1.0 + obj_val.abs()) {
     return false
   }
   for c_idx = 0; c_idx < self.constraints.length(); c_idx = c_idx + 1 {
@@ -218,6 +225,9 @@ pub fn Model::verify_solution(
     for j = 0; j < c.terms.length(); j = j + 1 {
       let t = c.terms[j]
       lhs = lhs + t.coeff * sol.primal[t.var_id.index]
+    }
+    if !is_finite_double(lhs) {
+      return false
     }
     match c.relation {
       Le => if lhs > c.rhs + tol { return false }
