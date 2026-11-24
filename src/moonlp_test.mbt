@@ -1091,3 +1091,61 @@ test "32. 4-period capacitated lot-sizing MILP (setup binary + continuous flow)"
   assert_true(m.verify_solution(sol_cut))
   assert_approx(sol_cut.objective, 302.0, 1.0e-5)
 }
+
+///|
+test "33. authentic Netlib AFIRO benchmark (28 rows, 32 cols, opt = -464.75314286)" {
+  let m = parse_mps(netlib_afiro_mps())
+  assert_eq(m.num_vars(), 32)
+  assert_eq(m.num_constraints(), 27)
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol, tol=1.0e-5))
+  assert_approx(sol.objective, -464.75314285714285, 1.0e-5)
+  let cert = m.certify_lp_solution(sol, tol=1.0e-5)
+  assert_true(cert.certified_optimal)
+}
+
+///|
+test "34. authentic HiGHS AVGAS benchmark (11 rows, 8 cols, opt = -7.75)" {
+  let m = parse_mps(highs_avgas_mps())
+  assert_eq(m.num_vars(), 8)
+  assert_eq(m.num_constraints(), 10)
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol, tol=1.0e-5))
+  assert_approx(sol.objective, -7.75, 1.0e-6)
+}
+
+///|
+test "35. Dual Simplex Warm-Start B&B beats Cold-Start B&B on pivot count" {
+  let vals = [15.0, 22.0, 14.0, 26.0, 32.0, 9.0, 16.0, 8.0, 25.0, 19.0]
+  let wts = [4.0, 7.0, 5.0, 8.0, 10.0, 3.0, 5.0, 2.0, 8.0, 6.0]
+  let m = Model::new(Maximize)
+  let terms : Array[Term] = []
+  for i = 0; i < 10; i = i + 1 {
+    let v = m.add_binary_var("k_" + i.to_string(), obj=vals[i])
+    terms.push({ var_id: v, coeff: wts[i], })
+  }
+  m.add_constraint("cap", terms, Le, 23.0)
+
+  let cold = solve_milp(m)
+  let warm = solve_milp_warm(m)
+  assert_eq(cold.status, Optimal)
+  assert_eq(warm.status, Optimal)
+  assert_true(m.verify_solution(warm))
+  assert_approx(warm.objective, 77.0, 1.0e-6)
+  assert_approx(warm.objective, cold.objective, 1.0e-6)
+  assert_true(warm.iterations < cold.iterations)
+}
+
+///|
+test "36. 5-City Traveling Salesman Problem (TSP-MTZ MILP, opt = 80) via Warm-Start B&B" {
+  let m = build_tsp5_mtz_model()
+  let cold = solve_milp(m)
+  let warm = solve_milp_warm(m)
+  assert_eq(cold.status, Optimal)
+  assert_eq(warm.status, Optimal)
+  assert_true(m.verify_solution(warm, tol=1.0e-5))
+  assert_approx(warm.objective, 80.0, 1.0e-5)
+  assert_true(warm.iterations < cold.iterations)
+}

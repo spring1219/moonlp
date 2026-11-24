@@ -22,9 +22,10 @@ jobs:
           curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
           echo "$HOME/.moon/bin" >> $GITHUB_PATH
 
-      - name: Typecheck & Test on ${{ matrix.target }}
+      - name: Typecheck, Test, Example & Benchmark on ${{ matrix.target }}
         run: |
           moon version
           moon check --target ${{ matrix.target }}
           moon test --target ${{ matrix.target }}
           moon run src/examples --target ${{ matrix.target }}
+          moon bench --release --target ${{ matrix.target }}

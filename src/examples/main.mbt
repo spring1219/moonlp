@@ -163,4 +163,24 @@ fn main {
   println(
     "    GMI Cuts Added = \{grep.cuts_added} | Dual Pivots = \{grep.dual_pivots} | Solved at Root = \{grep.solved_at_root}",
   )
+
+  // 5. Authentic Netlib AFIRO benchmark + 5-City TSP-MTZ Warm-Start vs Cold-Start B&B
+  let afiro_res = try {
+    let am = @moonlp.parse_mps(@moonlp.netlib_afiro_mps())
+    let asol = am.solve()
+    let acert = am.certify_lp_solution(asol, tol=1.0e-5)
+    "Optimum = \{asol.objective} (canonical -464.753143) | pivots=\{asol.iterations} | KKT=\{acert.certified_optimal}"
+  } catch {
+    @moonlp.ParseError(msg) => "Parse error: \{msg}"
+  }
+  println("\n[5] Authentic Netlib AFIRO Benchmark (28 rows, 32 cols)")
+  println("    \{afiro_res}")
+
+  let tsp = @moonlp.build_tsp5_mtz_model()
+  let tsp_cold = @moonlp.solve_milp(tsp)
+  let tsp_warm = @moonlp.solve_milp_warm(tsp)
+  println("\n[6] 5-City TSP (MTZ Subtour Elimination MILP, 20 binary + 4 continuous vars)")
+  println(
+    "    Optimum Tour = \{tsp_warm.objective} | Cold B&B pivots=\{tsp_cold.iterations} vs Dual Warm-Start pivots=\{tsp_warm.iterations}",
+  )
 }
