@@ -45,3 +45,19 @@ test "bench 5-city TSP-MTZ MILP: cold vs warm dual simplex B&B" (b : @bench.T) {
   b.bench(name="tsp5_cold_bb", fn() { b.keep(solve_milp(m).objective) })
   b.bench(name="tsp5_warm_dual_bb", fn() { b.keep(solve_milp_warm(m).objective) })
 }
+
+///|
+test "bench netlib adlittle LP (56x97, 480 nonzeros)" (b : @bench.T) {
+  let m = try {
+    parse_mps(netlib_adlittle_mps())
+  } catch {
+    _ => abort("adlittle parse failed")
+  }
+  b.bench(fn() { b.keep(m.solve().objective) })
+}
+
+///|
+test "bench 5-city TSP-MTZ: unified Branch-and-Cut" (b : @bench.T) {
+  let m = build_tsp5_mtz_model()
+  b.bench(fn() { b.keep(solve_milp_branch_and_cut(m).0.objective) })
+}

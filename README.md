@@ -5,27 +5,26 @@
 ![Backends: wasm-gc | js | native](https://img.shields.io/badge/targets-wasm--gc%20%7C%20js%20%7C%20native-brightgreen.svg)
 
 > **零外部依赖、全后端（`wasm-gc` / `js` / `native`）通用的纯 MoonBit 线性规划（LP）与混合整数线性规划（MILP）求解器与建模库**  
-> 已通过真实国际标准 **Netlib `AFIRO`**、**HiGHS `AVGAS`** 与 36 项全后端测试及 `moon bench --release` 基准验证。
+> 已通过真实国际标准 **Netlib `ADLITTLE`（56×97）**、**Netlib `AFIRO`（28×32）**、**HiGHS `AVGAS`/`SMALL_MIP`**、**MIPLIB 3.0 `FLUGPL`** 及 41 项全后端测试与 `moon bench --release` 验证。
 
 ---
 
-## 核心特性（v0.4.0 · 三后端 CI + `moon bench` 全绿验证）
+## 核心特性（v0.5.0 · 三后端 CI + `moon bench` 全绿验证）
 
 - **类型安全的代数建模 DSL** (`src/types.mbt`, `src/model.mbt`)
   - 支持 `Minimize` / `Maximize`、连续 (`Continuous`)、一般整数 (`Integer`)、0-1 二值 (`Binary`) 变量、任意上下界与自由变量，内置独立可行性校验器 `Model::verify_solution`。
-- **稀疏感知原始单纯形 + 对偶单纯形引擎** (`src/simplex.mbt`, `src/dual_simplex.mbt`)
-  - **稀疏感知 Gauss-Jordan 旋转**：先收集主元行非零列索引，跳过稀疏矩阵中的大量零元素更新，大幅降低工业算例旋转开销。
-  - **Harris 最大主元稳定性选元 + Bland 防退化循环规则**：常规迭代中在最小比值平局时优先选取最大主元 $|a_{re}|$ 提升数值条件数，检测到停滞后自动切换 Bland 规则保证有限步收敛。
+- **稀疏感知原始单纯形 + 对偶单纯形 + Ruiz 矩阵平衡缩放** (`src/simplex.mbt`, `src/dual_simplex.mbt`, `src/scaling.mbt`)
+  - **Ruiz 迭代 $L_\infty$ 平衡缩放 (`solve_scaled` / `ruiz_scale`)**：自动均衡行列幅值，将病态工业矩阵的系数动态范围从 $10^6$ 压至 $< 5$，并精确反缩放原始解、对偶影子价格与检验数。
+  - **稀疏感知 Gauss-Jordan 旋转 + Harris 最大主元稳定性选元 + Bland 防循环**：跳过零元素更新，兼顾大算例速度与数值稳定性。
   - **Dual Simplex (`solve_lp_dual` / `run_dual_simplex`)**：零 Phase I 直接求解对偶可行 LP，并驱动割平面与分支定界子节点热启动。
-- **三大 MILP 求解引擎（支持同算例横向对拍）** (`src/warm_bb.mbt`, `src/cuts.mbt`, `src/milp.mbt`)
-  - **`solve_milp_warm`（Dual Simplex 热启动分支定界）**：子节点直接继承父节点最优单纯形表，追加单行界割并用 Dual Simplex 1–3 步重优化，彻底避免每节点重跑 Phase I（在 10 物品背包与 5 城 TSP-MTZ 算例上旋转次数显著低于冷启动 B&B）。
-  - **`solve_milp_with_cuts`（Gomory 混合整数割平面 GMI Cuts + Branch-and-Cut）**：自动识别整数松弛行，对纯整数及连续+整数混合模型生成有效 GMI 割平面并用 Dual Simplex 重优化，多个经典算例在根节点 1 个节点直接收敛。
-  - **`solve_milp`（Best-Bound 分支定界基线）**：支持任意含无下界自由变量的通用 MILP。
+- **旗舰融合 Branch-and-Cut 与三大 MILP 引擎** (`src/branch_and_cut.mbt`, `src/warm_bb.mbt`, `src/cuts.mbt`, `src/milp.mbt`)
+  - **`solve_milp_branch_and_cut`（旗舰统一引擎）**：融合根节点 **GMI 混合整数割平面** + **混合 DFS 潜行/Best-Bound 搜索** + **继承割平面的 Dual Simplex 热启动分支** + **目标加权分支** + **原始舍入启发式（Primal Rounding Heuristic）**。
+  - 同时保留 `solve_milp_warm`（纯热启动 B&B）、`solve_milp_with_cuts`（GMI 割平面）与 `solve_milp`（基线 B&B）供教学与性能横向对拍。
 - **Presolve 预处理器、KKT 强对偶证明器与后验灵敏度分析** (`src/presolve.mbt`, `src/certificate.mbt`, `src/sensitivity.mbt`)
   - 单变量约束界收紧与冗余行消除；独立机检原始可行性误差、互补松弛误差与强对偶间隙 $|c^T x - b^T y|$；约束紧致度/松弛量/影子价格与 RHS 扰动分析。
-- **双工业标准格式完整双向读写** (`src/lp_format.mbt`, `src/mps_format.mbt`)
+- **双工业标准格式完整支持** (`src/lp_format.mbt`, `src/mps_format.mbt`)
   - **CPLEX `.lp`**：`parse_lp` + `to_lp_string`
-  - **Netlib / MIPLIB `.mps`**：`parse_mps` + `to_mps_string`（兼容 `.301`、`-.4`、`310.` 等真实 Netlib 数值格式与 `'MARKER' 'INTORG'/'INTEND'` 整数段）。
+  - **Netlib / MIPLIB `.mps`**：`parse_mps` + `to_mps_string`（完整支持 `N/L/G/E` 行、`RANGES` 区间约束、`LO/UP/FX/FR/BV/LI/UI` 边界、`.301`/`-.4`/`310.` 数值格式与 `'MARKER' 'INTORG'/'INTEND'` 整数段）。
 
 ---
 

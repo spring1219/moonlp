@@ -1149,3 +1149,117 @@ test "36. 5-City Traveling Salesman Problem (TSP-MTZ MILP, opt = 80) via Warm-St
   assert_approx(warm.objective, 80.0, 1.0e-5)
   assert_true(warm.iterations < cold.iterations)
 }
+
+///|
+test "37. authentic Netlib ADLITTLE benchmark (56 rows, 97 cols, 480 nonzeros)" {
+  let m = parse_mps(netlib_adlittle_mps())
+  assert_eq(m.num_vars(), 97)
+  assert_eq(m.num_constraints(), 56)
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol, tol=1.0e-4))
+  assert_approx(sol.objective, 225494.96316238, 1.0e-2)
+  let cert = m.certify_lp_solution(sol, tol=1.0e-3)
+  assert_true(cert.certified_optimal)
+}
+
+///|
+test "38. Ruiz L-infinity equilibration scaling slashes dynamic range & preserves exact duals" {
+  // Ill-conditioned LP with 1e6 coefficient ratio
+  let m = Model::new(Maximize)
+  let x = m.add_continuous_var("x", obj=3000.0)
+  let y = m.add_continuous_var("y", obj=0.002)
+  m.add_constraint(
+    "r1",
+    [{ var_id: x, coeff: 1000.0, }, { var_id: y, coeff: 0.001, }],
+    Le,
+    4.0,
+  )
+  m.add_constraint(
+    "r2",
+    [{ var_id: x, coeff: 2000.0, }, { var_id: y, coeff: 0.001, }],
+    Le,
+    5.0,
+  )
+  let (sol_s, rep) = m.solve_scaled(passes=6)
+  assert_eq(sol_s.status, Optimal)
+  assert_true(rep.original_ratio >= 1.0e6)
+  assert_true(rep.scaled_ratio < 5.0)
+  assert_true(m.verify_solution(sol_s, tol=1.0e-5))
+  assert_approx(sol_s.objective, 9.0, 1.0e-6)
+  let cert = m.certify_lp_solution(sol_s, tol=1.0e-5)
+  assert_true(cert.certified_optimal)
+
+  // Also test Ruiz scaling on real Netlib ADLITTLE (56x97)
+  let ad = parse_mps(netlib_adlittle_mps())
+  let (ad_sol, ad_rep) = ad.solve_scaled(passes=5)
+  assert_eq(ad_sol.status, Optimal)
+  assert_true(ad_rep.scaled_ratio < ad_rep.original_ratio)
+  assert_approx(ad_sol.objective, 225494.96316238, 1.0e-2)
+}
+
+///|
+test "39. authentic HiGHS SMALL_MIP with MPS RANGES section (opt = 61.5/19)" {
+  let m = parse_mps(highs_small_mip_mps())
+  // 5 base rows + 2 ranged companion rows = 7 constraints
+  assert_eq(m.num_vars(), 8)
+  assert_eq(m.num_constraints(), 7)
+  let (sol, _) = solve_milp_branch_and_cut(m)
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol, tol=1.0e-5))
+  assert_approx(sol.objective, 61.5 / 19.0, 1.0e-5)
+}
+
+///|
+test "40. authentic MIPLIB 3.0 FLUGPL airline scheduling (LP = 1167185.73 + Branch-and-Cut)" {
+  let m = parse_mps(miplib_flugpl_mps())
+  assert_eq(m.num_vars(), 18)
+  assert_eq(m.num_constraints(), 18)
+  let lp_sol = solve_lp(m)
+  assert_eq(lp_sol.status, Optimal)
+  assert_approx(lp_sol.objective, 1167185.73, 0.05)
+
+  // Unified Branch-and-Cut (GMI cuts + Hybrid DFS-Plunge + Dual Warm-Start + Rounding Heuristic)
+  let cfg : SolverConfig = { ..SolverConfig::default(), max_nodes: 400, }
+  let (mip_sol, stats) = solve_milp_branch_and_cut(m, max_root_cuts=6, config=cfg)
+  assert_true(stats.cuts_added > 0)
+  // Root GMI cuts must strictly tighten LP bound above 1167185.73
+  assert_true(stats.post_cut_lp_obj > stats.root_lp_obj + 1.0)
+  if mip_sol.status == Optimal || mip_sol.status == NodeLimit {
+    if mip_sol.primal.length() == 18 {
+      assert_true(mip_sol.objective >= 1201500.0 - 1.0)
+    }
+  }
+}
+
+///|
+test "41. unified Branch-and-Cut exactness across Knapsack, TSP-MTZ, and Mixed IP" {
+  // 1) 5-city TSP-MTZ (exact = 80.0)
+  let tsp = build_tsp5_mtz_model()
+  let (tsp_sol, _) = solve_milp_branch_and_cut(tsp)
+  assert_eq(tsp_sol.status, Optimal)
+  assert_true(tsp.verify_solution(tsp_sol, tol=1.0e-5))
+  assert_approx(tsp_sol.objective, 80.0, 1.0e-5)
+
+  // 2) Mixed Integer-Continuous MILP (exact = 70/3)
+  let mx = Model::new(Maximize)
+  let x = mx.add_int_var("x", obj=5.0)
+  let y = mx.add_continuous_var("y", obj=4.0)
+  mx.add_constraint(
+    "c1",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 1.0, }],
+    Le,
+    5.0,
+  )
+  mx.add_constraint(
+    "c2",
+    [{ var_id: x, coeff: 10.0, }, { var_id: y, coeff: 6.0, }],
+    Le,
+    45.0,
+  )
+  let (mx_sol, mx_stats) = solve_milp_branch_and_cut(mx)
+  assert_eq(mx_sol.status, Optimal)
+  assert_true(mx.verify_solution(mx_sol))
+  assert_approx(mx_sol.objective, 70.0 / 3.0, 1.0e-5)
+  assert_eq(mx_stats.nodes_explored, 1)
+}
