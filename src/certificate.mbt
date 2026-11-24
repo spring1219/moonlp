@@ -62,16 +62,12 @@ pub fn Model::certify_lp_solution(
   // 1. Check finiteness & variable bounds, compute linear & total primal objective
   let mut max_pv = 0.0
   let mut p_lin = 0.0
-  let mut max_c = 0.0
   for j = 0; j < n; j = j + 1 {
     let x = sol.primal[j]
     if !is_finite_double(x) {
       return invalid
     }
     let v = self.vars[j]
-    if v.obj.abs() > max_c {
-      max_c = v.obj.abs()
-    }
     p_lin = p_lin + v.obj * x
     if x < v.lb {
       let viol = v.lb - x
@@ -93,10 +89,14 @@ pub fn Model::certify_lp_solution(
     return invalid
   }
 
-  // 2. Check constraints, dual sign feasibility, complementary slackness, accumulate A^T y
+  // 2. Check constraints, per-row dual sign feasibility, local complementary slackness,
+  //    and accumulate A^T y & local column scales |A|^T |y| (strictly isolated per row/col!)
   let at_y = Array::make(n, 0.0)
+  let at_y_abs = Array::make(n, 0.0)
   let mut max_dv = 0.0
   let mut max_comp = 0.0
+  let mut dual_ok = true
+  let mut comp_ok = true
   let mut d_lin = 0.0
 
   for i = 0; i < m; i = i + 1 {
@@ -108,8 +108,10 @@ pub fn Model::certify_lp_solution(
     let mut lhs = 0.0
     for k = 0; k < c.terms.length(); k = k + 1 {
       let t = c.terms[k]
-      lhs = lhs + t.coeff * sol.primal[t.var_id.index]
-      at_y[t.var_id.index] = at_y[t.var_id.index] + t.coeff * y
+      let idx = t.var_id.index
+      lhs = lhs + t.coeff * sol.primal[idx]
+      at_y[idx] = at_y[idx] + t.coeff * y
+      at_y_abs[idx] = at_y_abs[idx] + (t.coeff * y).abs()
     }
     if !is_finite_double(lhs) {
       return invalid
@@ -127,34 +129,51 @@ pub fn Model::certify_lp_solution(
       }
     }
 
-    // Dual sign feasibility:
+    // Strict per-row dual sign feasibility (pure absolute `tol`, never inflated by unrelated vars!):
     // Minimize: Le => y <= 0, Ge => y >= 0, Eq => free
     // Maximize: Le => y >= 0, Ge => y <= 0, Eq => free
     let y_min = sense_sign * y
     match c.relation {
       Le =>
-        if y_min > 0.0 && y_min > max_dv {
-          max_dv = y_min
+        if y_min > 0.0 {
+          if y_min > max_dv {
+            max_dv = y_min
+          }
+          if y_min > tol {
+            dual_ok = false
+          }
         }
       Ge =>
-        if y_min < 0.0 && -y_min > max_dv {
-          max_dv = -y_min
+        if y_min < 0.0 {
+          let dv = -y_min
+          if dv > max_dv {
+            max_dv = dv
+          }
+          if dv > tol {
+            dual_ok = false
+          }
         }
       Eq => ()
     }
 
+    let abs_res = (lhs - c.rhs).abs()
     let comp = (y * (lhs - c.rhs)).abs()
     if comp > max_comp {
       max_comp = comp
     }
+    let min_pair = if y.abs() < abs_res { y.abs() } else { abs_res }
+    if min_pair > tol || comp > tol * (1.0 + y.abs()) {
+      comp_ok = false
+    }
     d_lin = d_lin + y * c.rhs
   }
 
-  // 3. KKT stationarity & bound multipliers (exact general strong duality, invariant to obj_constant!)
+  // 3. Per-variable KKT stationarity & bound multipliers (strictly local scale per variable!)
   for j = 0; j < n; j = j + 1 {
     let v = self.vars[j]
     let x = sol.primal[j]
     let s_j = sense_sign * (v.obj - at_y[j]) // reduced cost in minimization space
+    let local_scale = 1.0 + v.obj.abs() + at_y_abs[j]
     let has_lb = v.lb > -inf_threshold
     let has_ub = v.ub < inf_threshold
 
@@ -163,6 +182,9 @@ pub fn Model::certify_lp_solution(
       if !has_lb {
         if s_j > max_dv {
           max_dv = s_j
+        }
+        if s_j > tol * local_scale {
+          dual_ok = false
         }
       } else {
         let gap_lb = x - v.lb
@@ -174,6 +196,12 @@ pub fn Model::certify_lp_solution(
           if bc > max_comp {
             max_comp = bc
           }
+          if s_j > tol * local_scale {
+            dual_ok = false
+          }
+          if bc > tol * local_scale {
+            comp_ok = false
+          }
         }
         d_lin = d_lin + sense_sign * s_j * v.lb
       }
@@ -183,6 +211,9 @@ pub fn Model::certify_lp_solution(
       if !has_ub {
         if mag > max_dv {
           max_dv = mag
+        }
+        if mag > tol * local_scale {
+          dual_ok = false
         }
       } else {
         let gap_ub = v.ub - x
@@ -194,24 +225,23 @@ pub fn Model::certify_lp_solution(
           if bc > max_comp {
             max_comp = bc
           }
+          if mag > tol * local_scale {
+            dual_ok = false
+          }
+          if bc > tol * local_scale {
+            comp_ok = false
+          }
         }
         d_lin = d_lin - sense_sign * mag * v.ub
       }
     }
   }
 
-  // Scale-separated, obj_constant-invariant KKT checks:
-  // - Primal feasibility uses pure absolute tolerance `tol` (never inflated by obj_constant)
-  // - Dual & complementarity use objective-coefficient scale `1 + max|c_j|`
-  // - Strong duality compares linear objective parts `p_lin` vs `d_lin` directly
   let d_obj = d_lin + self.obj_constant
-  let c_scale = 1.0 + max_c
   let lin_scale = 1.0 +
     (if p_lin.abs() > d_lin.abs() { p_lin.abs() } else { d_lin.abs() })
   let gap = (p_lin - d_lin).abs()
   let primal_ok = max_pv <= tol
-  let dual_ok = max_dv <= tol * c_scale
-  let comp_ok = max_comp <= tol * c_scale
   let gap_ok = gap <= tol * lin_scale
 
   {

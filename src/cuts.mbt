@@ -18,6 +18,129 @@ fn is_near_int(x : Double, tol : Double) -> Bool {
 }
 
 ///|
+/// Sound interval propagation over shifted variables u_j = x_j - lbs[j] >= 0
+/// to derive valid finite upper bounds for variables constrained by linear inequalities.
+fn compute_implied_shifted_ubs(
+  model : Model,
+  lbs : Array[Double],
+  init_ubs : Array[Double],
+) -> Array[Double] {
+  let n = lbs.length()
+  let ubs = init_ubs.copy()
+  for _pass = 0; _pass < 3; _pass = _pass + 1 {
+    for i = 0; i < model.constraints.length(); i = i + 1 {
+      let c = model.constraints[i]
+      let coeffs = Array::make(n, 0.0)
+      let mut rhs = c.rhs
+      for k = 0; k < c.terms.length(); k = k + 1 {
+        let t = c.terms[k]
+        let idx = t.var_id.index
+        coeffs[idx] = coeffs[idx] + t.coeff
+        rhs = rhs - t.coeff * lbs[idx]
+      }
+      // Check <= direction (for Le and Eq): sum coeffs[j] * u_j <= rhs
+      if c.relation == Le || c.relation == Eq {
+        for j = 0; j < n; j = j + 1 {
+          let aj = coeffs[j]
+          if aj > 1.0e-12 {
+            let mut min_other = 0.0
+            let mut ok = true
+            for p = 0; p < n; p = p + 1 {
+              if p != j && coeffs[p] < 0.0 {
+                if ubs[p] >= inf_threshold {
+                  ok = false
+                  break
+                }
+                min_other = min_other + coeffs[p] * ubs[p]
+              }
+            }
+            if ok {
+              let cand = (rhs - min_other) / aj
+              if is_finite_double(cand) && cand >= 0.0 && cand < ubs[j] {
+                ubs[j] = cand
+              }
+            }
+          }
+        }
+      }
+      // Check >= direction (for Ge and Eq): sum (-coeffs[j]) * u_j <= -rhs
+      if c.relation == Ge || c.relation == Eq {
+        for j = 0; j < n; j = j + 1 {
+          let aj = -coeffs[j]
+          if aj > 1.0e-12 {
+            let mut min_other = 0.0
+            let mut ok = true
+            for p = 0; p < n; p = p + 1 {
+              if p != j && -coeffs[p] < 0.0 {
+                if ubs[p] >= inf_threshold {
+                  ok = false
+                  break
+                }
+                min_other = min_other - coeffs[p] * ubs[p]
+              }
+            }
+            if ok {
+              let cand = (-rhs - min_other) / aj
+              if is_finite_double(cand) && cand >= 0.0 && cand < ubs[j] {
+                ubs[j] = cand
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  ubs
+}
+
+///|
+/// Compute a valid upper bound on the non-negative slack/surplus variable of a shifted row.
+fn compute_row_slack_ub(
+  coeffs : Array[Double],
+  rhs : Double,
+  rel : Relation,
+  var_ubs : Array[Double],
+) -> Double {
+  match rel {
+    Le => {
+      // s = rhs - sum a_j u_j <= rhs - sum_{a_j < 0} a_j * ub_j
+      let mut ub = rhs
+      for j = 0; j < coeffs.length(); j = j + 1 {
+        if coeffs[j] < 0.0 {
+          if var_ubs[j] >= inf_threshold {
+            return 1.0e300
+          }
+          ub = ub - coeffs[j] * var_ubs[j]
+        }
+      }
+      if is_finite_double(ub) && ub >= 0.0 {
+        ub
+      } else {
+        1.0e300
+      }
+    }
+    Ge => {
+      // s = sum a_j u_j - rhs <= sum_{a_j > 0} a_j * ub_j - rhs
+      let mut ub = -rhs
+      for j = 0; j < coeffs.length(); j = j + 1 {
+        if coeffs[j] > 0.0 {
+          if var_ubs[j] >= inf_threshold {
+            return 1.0e300
+          }
+          ub = ub + coeffs[j] * var_ubs[j]
+        }
+      }
+      if is_finite_double(ub) && ub >= 0.0 {
+        ub
+      } else {
+        1.0e300
+      }
+    }
+    Eq => 0.0
+  }
+}
+
+///|
 /// Solve a MILP using Root Gomory Mixed-Integer (GMI) Cutting Planes with
 /// Dual Simplex re-optimization, seamlessly falling back to Best-Bound
 /// Branch-and-Bound if fractional variables remain after `max_cuts` rounds.
@@ -60,7 +183,8 @@ pub fn solve_milp_with_cuts(
 
   // Step 1: Standardize non-negative shifted variables & track which columns are integer
   let lbs : Array[Double] = []
-  let col_ubs : Array[Double] = []
+  let init_ubs : Array[Double] = []
+  let is_fixed : Array[Bool] = []
   let std_obj : Array[Double] = []
   let is_int_col : Array[Bool] = []
   let ub_rows : Array[(Int32, Double, Bool)] = [] // (col, delta, is_int_slack)
@@ -86,23 +210,29 @@ pub fn solve_milp_with_cuts(
       let sol = solve_milp(model, config~)
       return (sol, empty_report)
     }
+    let fixed_j = eff_ub < inf_threshold && (eff_ub - eff_lb).abs() <= 1.0e-12
     let c_j = v.obj * sense_sign
     lbs.push(eff_lb)
-    col_ubs.push(
-      if eff_ub < inf_threshold {
+    is_fixed.push(fixed_j)
+    init_ubs.push(
+      if fixed_j {
+        0.0
+      } else if eff_ub < inf_threshold {
         eff_ub - eff_lb
       } else {
         1.0e300
       },
     )
-    std_obj.push(c_j)
+    std_obj.push(if fixed_j { 0.0 } else { c_j })
     let is_int = is_integer_var(v.kind)
     is_int_col.push(is_int)
     obj_offset = obj_offset + c_j * eff_lb
-    if eff_ub < inf_threshold {
+    if !fixed_j && eff_ub < inf_threshold {
       ub_rows.push((j, eff_ub - eff_lb, is_int))
     }
   }
+
+  let col_ubs = compute_implied_shifted_ubs(model, lbs, init_ubs)
 
   let n_std = n_orig
   let m_init = m_user + ub_rows.length()
@@ -123,8 +253,11 @@ pub fn solve_milp_with_cuts(
     let mut rhs = c.rhs
     for k = 0; k < c.terms.length(); k = k + 1 {
       let t = c.terms[k]
-      coeffs[t.var_id.index] = coeffs[t.var_id.index] + t.coeff
-      rhs = rhs - t.coeff * lbs[t.var_id.index]
+      let idx = t.var_id.index
+      if !is_fixed[idx] {
+        coeffs[idx] = coeffs[idx] + t.coeff
+      }
+      rhs = rhs - t.coeff * lbs[idx]
     }
     let mut rel = c.relation
     if rhs < 0.0 {
@@ -174,27 +307,37 @@ pub fn solve_milp_with_cuts(
   let is_artificial = Array::make(n_std, false)
 
   for i = 0; i < m_init; i = i + 1 {
+    let slack_ub = compute_row_slack_ub(
+      row_coeffs[i],
+      row_rhs[i],
+      row_rels[i],
+      col_ubs,
+    )
     match row_rels[i] {
       Le => {
         row_slack_col[i] = num_cols
         is_artificial.push(false)
         is_int_col.push(row_int_slack[i])
+        col_ubs.push(slack_ub)
         num_cols = num_cols + 1
       }
       Ge => {
         row_slack_col[i] = num_cols
         is_artificial.push(false)
         is_int_col.push(row_int_slack[i])
+        col_ubs.push(slack_ub)
         num_cols = num_cols + 1
         row_art_col[i] = num_cols
         is_artificial.push(true)
         is_int_col.push(false)
+        col_ubs.push(0.0)
         num_cols = num_cols + 1
       }
       Eq => {
         row_art_col[i] = num_cols
         is_artificial.push(true)
         is_int_col.push(false)
+        col_ubs.push(0.0)
         num_cols = num_cols + 1
       }
     }
@@ -238,6 +381,11 @@ pub fn solve_milp_with_cuts(
   tab.push(Array::make(num_cols + 1, 0.0))
 
   let col_active = Array::make(num_cols, true)
+  for j = 0; j < n_std; j = j + 1 {
+    if is_fixed[j] {
+      col_active[j] = false
+    }
+  }
   let mut total_iters = 0
 
   // Phase I if needed
@@ -265,7 +413,7 @@ pub fn solve_milp_with_cuts(
     for i = 0; i < m; i = i + 1 {
       if is_artificial[basis[i]] {
         for j = 0; j < num_cols; j = j + 1 {
-          if !is_artificial[j] && tab[i][j].abs() > config.tol {
+          if col_active[j] && !is_artificial[j] && tab[i][j].abs() > config.tol {
             pivot_tableau(tab, basis, m, rhs_col, i, j)
             break
           }
@@ -347,7 +495,8 @@ pub fn solve_milp_with_cuts(
       break
     }
 
-    // Generate numerically safe GMI cut from row `best_r` (build & validate BEFORE expanding tableau)
+    // Generate numerically safe GMI cut from row `best_r` (build & validate BEFORE expanding tableau).
+    // Never discard any nonzero coefficient without checking its maximum contribution over `col_ubs`.
     let rhs_val = tab[best_r][rhs_col]
     let f0 = rhs_val - d_floor(rhs_val)
     if f0 <= 1.0e-5 || 1.0 - f0 <= 1.0e-5 {
@@ -355,34 +504,29 @@ pub fn solve_milp_with_cuts(
     }
     let scale = f0 / (1.0 - f0)
     let new_col = num_cols
-    let mut row_max_a = 0.0
-    for j = 0; j < new_col; j = j + 1 {
-      if col_active[j] && j != basis[best_r] {
-        let av = tab[best_r][j].abs()
-        if av > row_max_a {
-          row_max_a = av
-        }
-      }
-    }
-    let zero_noise = 1.0e-14 * (1.0 + row_max_a)
     let cut_row = Array::make(num_cols + 2, 0.0)
     let mut f0_eff = f0 - 1.0e-11
     let mut cut_has_coeff = false
     let mut cut_safe = true
     let mut max_g = 0.0
     let mut min_g = 1.0e308
+    let mut cut_slack_ub = -f0_eff
+    let mut cut_slack_finite = true
 
     for j = 0; j < new_col; j = j + 1 {
       if !col_active[j] || j == basis[best_r] {
         continue
       }
+      if j < col_ubs.length() && col_ubs[j] == 0.0 {
+        continue
+      }
       let a = tab[best_r][j]
-      if a.abs() <= zero_noise {
+      if a == 0.0 {
         continue
       }
       let gj = if is_int_col[j] {
         let fj = a - d_floor(a)
-        if fj <= 1.0e-14 || 1.0 - fj <= 1.0e-14 {
+        if fj <= 0.0 || fj >= 1.0 {
           0.0
         } else if fj <= f0 {
           fj
@@ -403,7 +547,14 @@ pub fn solve_milp_with_cuts(
         if gj < min_g {
           min_g = gj
         }
-      } else if gj > 1.0e-14 {
+        if cut_slack_finite {
+          if j < col_ubs.length() && col_ubs[j] < inf_threshold {
+            cut_slack_ub = cut_slack_ub + gj * col_ubs[j]
+          } else {
+            cut_slack_finite = false
+          }
+        }
+      } else if gj > 0.0 {
         // Never silently drop a positive GMI coefficient: only relax RHS if col has finite upper bound
         if j < col_ubs.length() && col_ubs[j] < inf_threshold {
           f0_eff = f0_eff - gj * col_ubs[j]
@@ -441,6 +592,13 @@ pub fn solve_milp_with_cuts(
     basis.push(new_col)
     col_active.push(true)
     is_int_col.push(false)
+    col_ubs.push(
+      if cut_slack_finite && is_finite_double(cut_slack_ub) && cut_slack_ub >= 0.0 {
+        cut_slack_ub
+      } else {
+        1.0e300
+      },
+    )
     m = m + 1
     cuts_added = cuts_added + 1
 

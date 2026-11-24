@@ -180,7 +180,8 @@ fn run_simplex_phase(
 }
 
 ///|
-/// Check whether constraint coefficients exhibit extreme scales (< 1e-4, > 1e4, or ratio > 1e3).
+/// Check whether active (non-fixed) constraint coefficients exhibit extreme scales
+/// (< 1e-4, > 1e4, or ratio > 1e3).
 fn needs_auto_scaling(model : Model) -> Bool {
   if model.constraints.length() == 0 || model.vars.length() == 0 {
     return false
@@ -190,7 +191,11 @@ fn needs_auto_scaling(model : Model) -> Bool {
   for i = 0; i < model.constraints.length(); i = i + 1 {
     let terms = model.constraints[i].terms
     for k = 0; k < terms.length(); k = k + 1 {
-      let a = terms[k].coeff.abs()
+      let t = terms[k]
+      if is_fixed_var(model.vars[t.var_id.index]) {
+        continue
+      }
+      let a = t.coeff.abs()
       if a > 0.0 {
         if a < min_v {
           min_v = a
@@ -208,8 +213,8 @@ fn needs_auto_scaling(model : Model) -> Bool {
 }
 
 ///|
-/// Check whether coefficients fall near or below simplex pivot tolerance (< 1e-11 or > 1e11),
-/// requiring Ruiz-scaled LP relaxations in MILP solvers.
+/// Check whether active (non-fixed) coefficients fall near or below simplex pivot tolerance
+/// (< 1e-11 or > 1e11), requiring Ruiz-scaled LP relaxations in MILP solvers.
 fn has_extreme_scale(model : Model) -> Bool {
   if model.constraints.length() == 0 || model.vars.length() == 0 {
     return false
@@ -219,7 +224,11 @@ fn has_extreme_scale(model : Model) -> Bool {
   for i = 0; i < model.constraints.length(); i = i + 1 {
     let terms = model.constraints[i].terms
     for k = 0; k < terms.length(); k = k + 1 {
-      let a = terms[k].coeff.abs()
+      let t = terms[k]
+      if is_fixed_var(model.vars[t.var_id.index]) {
+        continue
+      }
+      let a = t.coeff.abs()
       if a > 0.0 {
         if a < min_v {
           min_v = a
@@ -248,9 +257,16 @@ pub fn solve_lp(
     if sol.status == Optimal && model.verify_lp_feasibility(sol, tol=1.0e-4) {
       return sol
     }
+    // Never blindly trust scaled Infeasible/Unbounded if unscaled LP finds a verified optimum
+    let raw_fb = solve_lp_unscaled(model, config)
+    if raw_fb.status == Optimal &&
+      model.verify_lp_feasibility(raw_fb, tol=config.tol * 100.0) {
+      return raw_fb
+    }
     if sol.status != Optimal {
       return sol
     }
+    return raw_fb
   }
   let raw = solve_lp_unscaled(model, config)
   if raw.status == Optimal && !model.verify_lp_feasibility(raw, tol=1.0e-4) {

@@ -129,6 +129,7 @@ pub fn solve_milp_warm(
 
   // Step 1: Standardize non-negative shifted variables
   let lbs : Array[Double] = []
+  let is_fixed : Array[Bool] = []
   let std_obj : Array[Double] = []
   let is_int_col : Array[Bool] = []
   let ub_rows : Array[(Int32, Double)] = []
@@ -152,12 +153,14 @@ pub fn solve_milp_warm(
     if eff_lb <= -inf_threshold {
       return solve_milp(model, config~)
     }
+    let fixed_j = eff_ub < inf_threshold && (eff_ub - eff_lb).abs() <= 1.0e-12
     let c_j = v.obj * sense_sign
     lbs.push(eff_lb)
-    std_obj.push(c_j)
+    is_fixed.push(fixed_j)
+    std_obj.push(if fixed_j { 0.0 } else { c_j })
     is_int_col.push(is_integer_var(v.kind))
     obj_offset = obj_offset + c_j * eff_lb
-    if eff_ub < inf_threshold {
+    if !fixed_j && eff_ub < inf_threshold {
       ub_rows.push((j, eff_ub - eff_lb))
     }
   }
@@ -179,8 +182,11 @@ pub fn solve_milp_warm(
     let mut rhs = c.rhs
     for k = 0; k < c.terms.length(); k = k + 1 {
       let t = c.terms[k]
-      coeffs[t.var_id.index] = coeffs[t.var_id.index] + t.coeff
-      rhs = rhs - t.coeff * lbs[t.var_id.index]
+      let idx = t.var_id.index
+      if !is_fixed[idx] {
+        coeffs[idx] = coeffs[idx] + t.coeff
+      }
+      rhs = rhs - t.coeff * lbs[idx]
     }
     let mut rel = c.relation
     if rhs < 0.0 {
@@ -274,6 +280,11 @@ pub fn solve_milp_warm(
   tab.push(Array::make(num_cols + 1, 0.0))
 
   let col_active = Array::make(num_cols, true)
+  for j = 0; j < n_std; j = j + 1 {
+    if is_fixed[j] {
+      col_active[j] = false
+    }
+  }
   let mut total_iters = 0
 
   // Solve Root LP ONCE (Phase I + Phase II)
@@ -303,7 +314,7 @@ pub fn solve_milp_warm(
     for i = 0; i < m_total; i = i + 1 {
       if is_artificial[basis[i]] {
         for j = 0; j < num_cols; j = j + 1 {
-          if !is_artificial[j] && tab[i][j].abs() > config.tol {
+          if col_active[j] && !is_artificial[j] && tab[i][j].abs() > config.tol {
             pivot_tableau(tab, basis, m_total, rhs_col, i, j)
             break
           }

@@ -182,7 +182,7 @@ fn verify_or_repair_int_candidate(
     nodes_explored: 0,
     mip_gap: 0.0,
   }
-  if model.verify_solution(direct, tol=1.0e-5) {
+  if model.verify_solution(direct, tol=config.tol) {
     return Some(direct)
   }
   if !has_continuous {
@@ -202,7 +202,8 @@ fn verify_or_repair_int_candidate(
   }
   let fixed_lp = model.clone_with_bounds(fixed_lbs, fixed_ubs)
   let cont_sol = solve_lp(fixed_lp, config~)
-  if cont_sol.status == Optimal && model.verify_solution(cont_sol, tol=1.0e-5) {
+  if cont_sol.status == Optimal &&
+    model.verify_solution(cont_sol, tol=config.tol) {
     Some(cont_sol)
   } else {
     None

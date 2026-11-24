@@ -42,14 +42,23 @@ fn d_sqrt(x : Double) -> Double {
 }
 
 ///|
-/// Compute dynamic range ratio (max|a_ij| / min|a_ij|) of nonzero constraint coefficients.
+fn is_fixed_var(v : VarSpec) -> Bool {
+  v.lb > -inf_threshold && v.ub < inf_threshold && (v.ub - v.lb).abs() <= 1.0e-12
+}
+
+///|
+/// Compute dynamic range ratio (max|a_ij| / min|a_ij|) of nonzero active constraint coefficients.
 pub fn Model::matrix_scale_ratio(self : Model) -> Double {
   let mut min_v = 1.0e308
   let mut max_v = 0.0
   for i = 0; i < self.constraints.length(); i = i + 1 {
     let terms = self.constraints[i].terms
     for k = 0; k < terms.length(); k = k + 1 {
-      let a = terms[k].coeff.abs()
+      let t = terms[k]
+      if is_fixed_var(self.vars[t.var_id.index]) {
+        continue
+      }
+      let a = t.coeff.abs()
       if a > 1.0e-30 {
         if a < min_v {
           min_v = a
@@ -113,6 +122,9 @@ fn Model::ruiz_scale_core(
       let terms = work_terms[i]
       for k = 0; k < terms.length(); k = k + 1 {
         let t = terms[k]
+        if is_fixed_var(self.vars[t.var_id.index]) {
+          continue
+        }
         let a = t.coeff.abs()
         if a > row_max[i] {
           row_max[i] = a

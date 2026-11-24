@@ -1748,3 +1748,154 @@ test "56. [v0.7 P1-3] CPLEX .lp parser rejects trailing tokens on constraint RHS
   }
   assert_true(bad_bound)
 }
+
+///|
+test "57. [v0.8 P0-1] MILP candidate & heuristic verification strictly obeys config.tol" {
+  // max x, x in {0, 1}, x <= 0.9999995 => violation of x=1 is 5e-7 > config.tol (1e-9).
+  // Only feasible integer solution is x = 0.
+  let m = Model::new(Maximize)
+  let x = m.add_binary_var("x", obj=1.0)
+  m.add_constraint("tight_ub", [{ var_id: x, coeff: 1.0, }], Le, 0.9999995)
+
+  let s1 = solve_milp(m)
+  assert_eq(s1.status, Optimal)
+  assert_true(m.verify_solution(s1, tol=1.0e-9))
+  assert_approx(s1.primal[0], 0.0, 1.0e-9)
+  assert_approx(s1.objective, 0.0, 1.0e-9)
+
+  let s2 = solve_milp_warm(m)
+  assert_eq(s2.status, Optimal)
+  assert_true(m.verify_solution(s2, tol=1.0e-9))
+  assert_approx(s2.primal[0], 0.0, 1.0e-9)
+
+  let (s3, _) = solve_milp_with_cuts(m)
+  assert_eq(s3.status, Optimal)
+  assert_true(m.verify_solution(s3, tol=1.0e-9))
+  assert_approx(s3.primal[0], 0.0, 1.0e-9)
+
+  let (s4, _) = solve_milp_branch_and_cut(m)
+  assert_eq(s4.status, Optimal)
+  assert_true(m.verify_solution(s4, tol=1.0e-9))
+  assert_approx(s4.primal[0], 0.0, 1.0e-9)
+}
+
+///|
+test "58. [v0.8 P0-2] Fixed-zero variable coefficient M=0 vs M=1e6 invariance across LP & MILP" {
+  // a = 2^-29; max x - 1.0625*a*y
+  // s.t. x - y + z + M*w <= 0.125, z - (1-a)*y = 0, 0 <= y <= 0.90625/a, w = 0, x in {0, 1}
+  // Exact optimum for both M=0 and M=1e6: x = 1, y = 0.875/a, obj = 0.0703125
+  let a = 1.0 / 536870912.0
+  let y_ub = 0.90625 / a
+  let cfg : SolverConfig = {
+    ..SolverConfig::default(),
+    max_iters: 100,
+    max_nodes: 24,
+  }
+  let ms = [0.0, 1.0e6]
+
+  for mi = 0; mi < ms.length(); mi = mi + 1 {
+    let big_m = ms[mi]
+    // Test both w fixed by constraint (w == 0) and w fixed by bounds (lb=ub=0)
+    for mode = 0; mode < 2; mode = mode + 1 {
+      let m = Model::new(Maximize)
+      let x = m.add_binary_var("x", obj=1.0)
+      let y = m.add_continuous_var("y", lb=0.0, ub=y_ub, obj=-1.0625 * a)
+      let z = m.add_continuous_var("z", lb=0.0, obj=0.0)
+      let w = if mode == 0 {
+        m.add_continuous_var("w", lb=0.0, ub=0.0, obj=0.0)
+      } else {
+        m.add_continuous_var("w", lb=0.0, obj=0.0)
+      }
+      m.add_constraint(
+        "c1",
+        [
+          { var_id: x, coeff: 1.0, },
+          { var_id: y, coeff: -1.0, },
+          { var_id: z, coeff: 1.0, },
+          { var_id: w, coeff: big_m, },
+        ],
+        Le,
+        0.125,
+      )
+      m.add_constraint(
+        "c2",
+        [{ var_id: z, coeff: 1.0, }, { var_id: y, coeff: -(1.0 - a), }],
+        Eq,
+        0.0,
+      )
+      if mode == 1 {
+        m.add_constraint("fix_w", [{ var_id: w, coeff: 1.0, }], Eq, 0.0)
+      }
+
+      // Verify fixed x = 1 LP directly via public solve_lp()
+      let m_x1 = m.clone_with_bounds(
+        [1.0, 0.0, 0.0, 0.0],
+        [1.0, y_ub, 1.0e300, if mode == 0 { 0.0 } else { 1.0e300 }],
+      )
+      let lp_x1 = solve_lp(m_x1, config=cfg)
+      assert_eq(lp_x1.status, Optimal)
+      assert_approx(lp_x1.objective, 0.0703125, 1.0e-6)
+
+      let s1 = solve_milp(m, config=cfg)
+      assert_eq(s1.status, Optimal)
+      assert_true(m.verify_solution(s1, tol=1.0e-7))
+      assert_approx(s1.objective, 0.0703125, 1.0e-6)
+
+      let s2 = solve_milp_warm(m, config=cfg)
+      assert_eq(s2.status, Optimal)
+      assert_true(m.verify_solution(s2, tol=1.0e-7))
+      assert_approx(s2.objective, 0.0703125, 1.0e-6)
+
+      let (s3, _) = solve_milp_with_cuts(m, config=cfg)
+      assert_eq(s3.status, Optimal)
+      assert_true(m.verify_solution(s3, tol=1.0e-7))
+      assert_approx(s3.objective, 0.0703125, 1.0e-6)
+
+      let (s4, _) = solve_milp_branch_and_cut(m, config=cfg)
+      assert_eq(s4.status, Optimal)
+      assert_true(m.verify_solution(s4, tol=1.0e-7))
+      assert_approx(s4.objective, 0.0703125, 1.0e-6)
+    }
+  }
+}
+
+///|
+test "59. [v0.8 P0-3] KKT certificate rejects wrong-sign dual despite unrelated 1e9 obj coeff" {
+  // min x + 1e9 * z s.t. 0 <= x <= 1, c0: x <= 1, c1: z = 0
+  let m = Model::new(Minimize)
+  let x = m.add_continuous_var("x", lb=0.0, ub=1.0, obj=1.0)
+  let z = m.add_continuous_var("z", lb=0.0, obj=1.0e9)
+  m.add_constraint("x_ub", [{ var_id: x, coeff: 1.0, }], Le, 1.0)
+  m.add_constraint("z_zero", [{ var_id: z, coeff: 1.0, }], Eq, 0.0)
+
+  // Suboptimal (1, 0) with wrong-sign dual +1 on Le constraint x <= 1
+  let bad_sign : Solution = {
+    status: Optimal,
+    objective: 1.0,
+    primal: [1.0, 0.0],
+    dual: [1.0, 1.0e9],
+    reduced_costs: [0.0, 0.0],
+    iterations: 0,
+    nodes_explored: 1,
+    mip_gap: 0.0,
+  }
+  let c1 = m.certify_lp_solution(bad_sign)
+  assert_false(c1.dual_feasible)
+  assert_false(c1.certified_optimal)
+  assert_true(c1.max_dual_violation >= 0.99)
+
+  // Suboptimal (1, 0) with valid-sign dual [0, 1e9] must also fail local stationarity
+  let bad_stat : Solution = { ..bad_sign, dual: [0.0, 1.0e9], }
+  let c2 = m.certify_lp_solution(bad_stat)
+  assert_false(c2.dual_feasible)
+  assert_false(c2.certified_optimal)
+
+  // True optimal (0, 0) must be certified
+  let opt = m.solve()
+  assert_eq(opt.status, Optimal)
+  assert_approx(opt.objective, 0.0, 1.0e-9)
+  let c_ok = m.certify_lp_solution(opt)
+  assert_true(c_ok.primal_feasible)
+  assert_true(c_ok.dual_feasible)
+  assert_true(c_ok.certified_optimal)
+}

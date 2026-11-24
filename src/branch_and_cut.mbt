@@ -133,6 +133,7 @@ fn try_rounding_heuristic(
   is_int_col : Array[Bool],
   sense_sign : Double,
   best_min_obj : Double,
+  config : SolverConfig,
 ) -> Solution? {
   let n_orig = model.vars.length()
   let cand_x = Array::make(n_orig, 0.0)
@@ -164,7 +165,7 @@ fn try_rounding_heuristic(
     nodes_explored: 0,
     mip_gap: 0.0,
   }
-  if model.verify_solution(sol, tol=1.0e-5) {
+  if model.verify_solution(sol, tol=config.tol) {
     Some(sol)
   } else {
     None
@@ -219,7 +220,8 @@ pub fn solve_milp_branch_and_cut(
   }
 
   let lbs : Array[Double] = []
-  let col_ubs : Array[Double] = []
+  let init_ubs : Array[Double] = []
+  let is_fixed : Array[Bool] = []
   let std_obj : Array[Double] = []
   let is_int_col : Array[Bool] = []
   let ub_rows : Array[(Int32, Double, Bool)] = []
@@ -251,23 +253,29 @@ pub fn solve_milp_branch_and_cut(
         },
       )
     }
+    let fixed_j = eff_ub < inf_threshold && (eff_ub - eff_lb).abs() <= 1.0e-12
     let c_j = v.obj * sense_sign
     lbs.push(eff_lb)
-    col_ubs.push(
-      if eff_ub < inf_threshold {
+    is_fixed.push(fixed_j)
+    init_ubs.push(
+      if fixed_j {
+        0.0
+      } else if eff_ub < inf_threshold {
         eff_ub - eff_lb
       } else {
         1.0e300
       },
     )
-    std_obj.push(c_j)
+    std_obj.push(if fixed_j { 0.0 } else { c_j })
     let is_int = is_integer_var(v.kind)
     is_int_col.push(is_int)
     obj_offset = obj_offset + c_j * eff_lb
-    if eff_ub < inf_threshold {
+    if !fixed_j && eff_ub < inf_threshold {
       ub_rows.push((j, eff_ub - eff_lb, is_int))
     }
   }
+
+  let col_ubs = compute_implied_shifted_ubs(model, lbs, init_ubs)
 
   let n_std = n_orig
   let m_init = m_user + ub_rows.length()
@@ -288,8 +296,11 @@ pub fn solve_milp_branch_and_cut(
     let mut rhs = c.rhs
     for k = 0; k < c.terms.length(); k = k + 1 {
       let t = c.terms[k]
-      coeffs[t.var_id.index] = coeffs[t.var_id.index] + t.coeff
-      rhs = rhs - t.coeff * lbs[t.var_id.index]
+      let idx = t.var_id.index
+      if !is_fixed[idx] {
+        coeffs[idx] = coeffs[idx] + t.coeff
+      }
+      rhs = rhs - t.coeff * lbs[idx]
     }
     let mut rel = c.relation
     if rhs < 0.0 {
@@ -336,27 +347,37 @@ pub fn solve_milp_branch_and_cut(
   let is_artificial = Array::make(n_std, false)
 
   for i = 0; i < m_init; i = i + 1 {
+    let slack_ub = compute_row_slack_ub(
+      row_coeffs[i],
+      row_rhs[i],
+      row_rels[i],
+      col_ubs,
+    )
     match row_rels[i] {
       Le => {
         row_slack_col[i] = num_cols
         is_artificial.push(false)
         is_int_col.push(row_int_slack[i])
+        col_ubs.push(slack_ub)
         num_cols = num_cols + 1
       }
       Ge => {
         row_slack_col[i] = num_cols
         is_artificial.push(false)
         is_int_col.push(row_int_slack[i])
+        col_ubs.push(slack_ub)
         num_cols = num_cols + 1
         row_art_col[i] = num_cols
         is_artificial.push(true)
         is_int_col.push(false)
+        col_ubs.push(0.0)
         num_cols = num_cols + 1
       }
       Eq => {
         row_art_col[i] = num_cols
         is_artificial.push(true)
         is_int_col.push(false)
+        col_ubs.push(0.0)
         num_cols = num_cols + 1
       }
     }
@@ -400,6 +421,11 @@ pub fn solve_milp_branch_and_cut(
   tab.push(Array::make(num_cols + 1, 0.0))
 
   let col_active = Array::make(num_cols, true)
+  for j = 0; j < n_std; j = j + 1 {
+    if is_fixed[j] {
+      col_active[j] = false
+    }
+  }
   let mut total_pivots = 0
 
   // Phase I + Phase II root LP
@@ -429,7 +455,7 @@ pub fn solve_milp_branch_and_cut(
     for i = 0; i < m; i = i + 1 {
       if is_artificial[basis[i]] {
         for j = 0; j < num_cols; j = j + 1 {
-          if !is_artificial[j] && tab[i][j].abs() > config.tol {
+          if col_active[j] && !is_artificial[j] && tab[i][j].abs() > config.tol {
             pivot_tableau(tab, basis, m, rhs_col, i, j)
             break
           }
@@ -509,33 +535,28 @@ pub fn solve_milp_branch_and_cut(
     }
     let scale = f0 / (1.0 - f0)
     let new_col = num_cols
-    let mut row_max_a = 0.0
-    for j = 0; j < new_col; j = j + 1 {
-      if col_active[j] && j != basis[best_r] {
-        let av = tab[best_r][j].abs()
-        if av > row_max_a {
-          row_max_a = av
-        }
-      }
-    }
-    let zero_noise = 1.0e-14 * (1.0 + row_max_a)
     let mut f0_eff = f0 - 1.0e-11
     let mut cut_has_coeff = false
     let mut cut_safe = true
     let mut max_g = 0.0
     let mut min_g = 1.0e308
+    let mut cut_slack_ub = -f0_eff
+    let mut cut_slack_finite = true
     let cut_row = Array::make(num_cols + 2, 0.0)
     for j = 0; j < new_col; j = j + 1 {
       if !col_active[j] || j == basis[best_r] {
         continue
       }
+      if j < col_ubs.length() && col_ubs[j] == 0.0 {
+        continue
+      }
       let a = tab[best_r][j]
-      if a.abs() <= zero_noise {
+      if a == 0.0 {
         continue
       }
       let gj = if is_int_col[j] {
         let fj = a - d_floor(a)
-        if fj <= 1.0e-14 || 1.0 - fj <= 1.0e-14 {
+        if fj <= 0.0 || fj >= 1.0 {
           0.0
         } else if fj <= f0 {
           fj
@@ -556,7 +577,14 @@ pub fn solve_milp_branch_and_cut(
         if gj < min_g {
           min_g = gj
         }
-      } else if gj > 1.0e-14 {
+        if cut_slack_finite {
+          if j < col_ubs.length() && col_ubs[j] < inf_threshold {
+            cut_slack_ub = cut_slack_ub + gj * col_ubs[j]
+          } else {
+            cut_slack_finite = false
+          }
+        }
+      } else if gj > 0.0 {
         if j < col_ubs.length() && col_ubs[j] < inf_threshold {
           f0_eff = f0_eff - gj * col_ubs[j]
         } else {
@@ -589,6 +617,13 @@ pub fn solve_milp_branch_and_cut(
     basis.push(new_col)
     col_active.push(true)
     is_int_col.push(false)
+    col_ubs.push(
+      if cut_slack_finite && is_finite_double(cut_slack_ub) && cut_slack_ub >= 0.0 {
+        cut_slack_ub
+      } else {
+        1.0e300
+      },
+    )
     m = m + 1
     cuts_added = cuts_added + 1
 
@@ -766,6 +801,7 @@ pub fn solve_milp_branch_and_cut(
           is_int_col,
           sense_sign,
           best_min_obj,
+          config,
         ) {
         Some(hsol) => {
           best_min_obj = hsol.objective * sense_sign
