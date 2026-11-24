@@ -1899,3 +1899,158 @@ test "59. [v0.8 P0-3] KKT certificate rejects wrong-sign dual despite unrelated 
   assert_true(c_ok.dual_feasible)
   assert_true(c_ok.certified_optimal)
 }
+
+///|
+test "60. [v0.9 P0-1] GMI never classifies slack with small continuous term as integer" {
+  // a = 2^-31; max x + 4*a*y s.t. x - a*y <= 0, 0 <= y <= 2^30, x in {0, 1}
+  // Exact optimum: x = 0, y = 2^30, obj = 2.0.
+  let a = 1.0 / 2147483648.0
+  let y_ub = 1073741824.0
+  let m = Model::new(Maximize)
+  let x = m.add_binary_var("x", obj=1.0)
+  let y = m.add_continuous_var("y", lb=0.0, ub=y_ub, obj=4.0 * a)
+  m.add_constraint(
+    "c1",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: -a, }],
+    Le,
+    0.0,
+  )
+
+  let s1 = solve_milp(m)
+  assert_eq(s1.status, Optimal)
+  assert_approx(s1.objective, 2.0, 1.0e-6)
+
+  let s2 = solve_milp_warm(m)
+  assert_eq(s2.status, Optimal)
+  assert_approx(s2.objective, 2.0, 1.0e-6)
+
+  // Assert BOTH final optimum AND that post-cut LP upper bound still covers known optimum 2.0!
+  let (s3, rep3) = solve_milp_with_cuts(m)
+  assert_eq(s3.status, Optimal)
+  assert_approx(s3.objective, 2.0, 1.0e-6)
+  assert_true(rep3.cut_lp_obj >= 2.0 - 1.0e-6)
+
+  let (s4, stats4) = solve_milp_branch_and_cut(m)
+  assert_eq(s4.status, Optimal)
+  assert_approx(s4.objective, 2.0, 1.0e-6)
+  assert_true(stats4.post_cut_lp_obj >= 2.0 - 1.0e-6)
+}
+
+///|
+test "61. [v0.9 P0-2] KKT certificate rejects intermediate overflow producing NaN in A^T y" {
+  // max x, 0 <= x, z <= 1, two copies of 1e200*(x - z) = 0; true opt = 1
+  let m = Model::new(Maximize)
+  let x = m.add_continuous_var("x", lb=0.0, ub=1.0, obj=1.0)
+  let z = m.add_continuous_var("z", lb=0.0, ub=1.0, obj=0.0)
+  m.add_constraint(
+    "e1",
+    [{ var_id: x, coeff: 1.0e200, }, { var_id: z, coeff: -1.0e200, }],
+    Eq,
+    0.0,
+  )
+  m.add_constraint(
+    "e2",
+    [{ var_id: x, coeff: 1.0e200, }, { var_id: z, coeff: -1.0e200, }],
+    Eq,
+    0.0,
+  )
+
+  // Suboptimal (0, 0) with finite duals [1e200, -1e200] overflows 1e200 * 1e200 -> +Inf + (-Inf) = NaN
+  let overflow_subopt : Solution = {
+    status: Optimal,
+    objective: 0.0,
+    primal: [0.0, 0.0],
+    dual: [1.0e200, -1.0e200],
+    reduced_costs: [0.0, 0.0],
+    iterations: 0,
+    nodes_explored: 1,
+    mip_gap: 0.0,
+  }
+  let cert = m.certify_lp_solution(overflow_subopt)
+  assert_false(cert.certified_optimal)
+  assert_false(cert.dual_feasible)
+}
+
+///|
+test "62. [v0.9 P0-3] LP preserves narrow [0, 5e-10] variable bounds instead of fixing to lb" {
+  // max 1e12 * x, 0 <= x <= 5e-10 => true opt x = 5e-10, obj = 500
+  let m = Model::new(Maximize)
+  let _x = m.add_continuous_var("x", lb=0.0, ub=5.0e-10, obj=1.0e12)
+
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol, tol=1.0e-9))
+  assert_approx(sol.primal[0], 5.0e-10, 1.0e-15)
+  assert_approx(sol.objective, 500.0, 1.0e-6)
+  assert_true(m.certify_lp_solution(sol).certified_optimal)
+
+  // MPS round-trip must also preserve narrow non-fixed interval [0, 5e-10]
+  let parsed = parse_mps(m.to_mps_string(name="NARROW"))
+  let sol_rt = parsed.solve()
+  assert_eq(sol_rt.status, Optimal)
+  assert_approx(sol_rt.objective, 500.0, 1.0e-6)
+}
+
+///|
+test "63. [v0.9 P1-1] Decimal-parameter fixed-zero variant keeps LP residual <= tol & MILP Optimal" {
+  // Decimal parameter variant: a = 2e-9, max x - 1.05*a*y
+  // s.t. x - y + z + 1e6*w <= 0.1, z - (1-a)*y = 0, 0 <= y <= 4.6e8, w = 0, x in {0, 1}
+  // Exact optimum: x = 1, y = 4.5e8, obj = 0.055.
+  let a = 2.0e-9
+  let y_ub = 4.6e8
+  let cfg : SolverConfig = {
+    ..SolverConfig::default(),
+    max_iters: 100,
+    max_nodes: 24,
+  }
+  let m = Model::new(Maximize)
+  let x = m.add_binary_var("x", obj=1.0)
+  let y = m.add_continuous_var("y", lb=0.0, ub=y_ub, obj=-1.05 * a)
+  let z = m.add_continuous_var("z", lb=0.0, obj=0.0)
+  let w = m.add_continuous_var("w", lb=0.0, obj=0.0)
+  m.add_constraint(
+    "c1",
+    [
+      { var_id: x, coeff: 1.0, },
+      { var_id: y, coeff: -1.0, },
+      { var_id: z, coeff: 1.0, },
+      { var_id: w, coeff: 1.0e6, },
+    ],
+    Le,
+    0.1,
+  )
+  m.add_constraint(
+    "c2",
+    [{ var_id: z, coeff: 1.0, }, { var_id: y, coeff: -(1.0 - a), }],
+    Eq,
+    0.0,
+  )
+  m.add_constraint("fix_w", [{ var_id: w, coeff: 1.0, }], Eq, 0.0)
+
+  let m_x1 = m.clone_with_bounds(
+    [1.0, 0.0, 0.0, 0.0],
+    [1.0, y_ub, 1.0e300, 1.0e300],
+  )
+  let lp_x1 = solve_lp(m_x1, config=cfg)
+  assert_eq(lp_x1.status, Optimal)
+  assert_true(m_x1.verify_solution(lp_x1, tol=1.0e-9))
+  assert_approx(lp_x1.objective, 0.055, 1.0e-6)
+
+  let s1 = solve_milp(m, config=cfg)
+  assert_eq(s1.status, Optimal)
+  assert_approx(s1.objective, 0.055, 1.0e-6)
+
+  let s2 = solve_milp_warm(m, config=cfg)
+  assert_eq(s2.status, Optimal)
+  assert_approx(s2.objective, 0.055, 1.0e-6)
+
+  let (s3, rep3) = solve_milp_with_cuts(m, config=cfg)
+  assert_eq(s3.status, Optimal)
+  assert_approx(s3.objective, 0.055, 1.0e-6)
+  assert_true(rep3.cut_lp_obj >= 0.055 - 1.0e-6)
+
+  let (s4, stats4) = solve_milp_branch_and_cut(m, config=cfg)
+  assert_eq(s4.status, Optimal)
+  assert_approx(s4.objective, 0.055, 1.0e-6)
+  assert_true(stats4.post_cut_lp_obj >= 0.055 - 1.0e-6)
+}

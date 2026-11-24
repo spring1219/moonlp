@@ -204,7 +204,11 @@ fn verify_or_repair_int_candidate(
   let cont_sol = solve_lp(fixed_lp, config~)
   if cont_sol.status == Optimal &&
     model.verify_solution(cont_sol, tol=config.tol) {
-    Some(cont_sol)
+    return Some(cont_sol)
+  }
+  let raw_sol = solve_lp_unscaled(fixed_lp, config)
+  if raw_sol.status == Optimal && model.verify_solution(raw_sol, tol=config.tol) {
+    Some(raw_sol)
   } else {
     None
   }
@@ -292,7 +296,7 @@ fn solve_milp_core(
         has_unproved = true
         continue
       }
-      NodeLimit | InfeasibleOrUnbounded => {
+      NodeLimit | InfeasibleOrUnbounded | NumericalError => {
         has_unproved = true
         continue
       }
@@ -402,8 +406,10 @@ fn solve_milp_core(
           Optimal
         } else if hit_max_iters && nodes_explored < config.max_nodes {
           MaxIterations
-        } else {
+        } else if nodes_explored >= config.max_nodes {
           NodeLimit
+        } else {
+          NumericalError
         }
         { ..sol, status: st, iterations: total_iters, nodes_explored, mip_gap: gap, }
       }
@@ -417,8 +423,10 @@ fn solve_milp_core(
           InfeasibleOrUnbounded
         }
         Solution::empty(st, total_iters, nodes_explored)
-      } else if nodes_explored >= config.max_nodes || has_unproved {
+      } else if nodes_explored >= config.max_nodes {
         Solution::empty(NodeLimit, total_iters, nodes_explored)
+      } else if has_unproved {
+        Solution::empty(NumericalError, total_iters, nodes_explored)
       } else {
         Solution::empty(Infeasible, total_iters, nodes_explored)
       }

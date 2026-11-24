@@ -13,11 +13,6 @@ pub(all) struct GmiCutReport {
 }
 
 ///|
-fn is_near_int(x : Double, tol : Double) -> Bool {
-  (x - d_round(x)).abs() <= tol
-}
-
-///|
 /// Sound interval propagation over shifted variables u_j = x_j - lbs[j] >= 0
 /// to derive valid finite upper bounds for variables constrained by linear inequalities.
 fn compute_implied_shifted_ubs(
@@ -210,7 +205,7 @@ pub fn solve_milp_with_cuts(
       let sol = solve_milp(model, config~)
       return (sol, empty_report)
     }
-    let fixed_j = eff_ub < inf_threshold && (eff_ub - eff_lb).abs() <= 1.0e-12
+    let fixed_j = eff_ub < inf_threshold && eff_lb == eff_ub
     let c_j = v.obj * sense_sign
     lbs.push(eff_lb)
     is_fixed.push(fixed_j)
@@ -271,13 +266,13 @@ pub fn solve_milp_with_cuts(
         Eq => Eq
       }
     }
-    // A slack/surplus variable is provably integral iff RHS is integer and every
-    // nonzero term is an integer variable with an integer coefficient.
-    let mut slack_int = is_near_int(rhs, config.tol)
+    // A slack/surplus variable is provably integral ONLY if RHS is an exact integer
+    // and EVERY nonzero term (coeffs[j] != 0.0) is an integer variable with an exact integer coeff.
+    let mut slack_int = rhs == d_round(rhs)
     if slack_int {
       for j = 0; j < n_std; j = j + 1 {
-        if coeffs[j].abs() > config.tol {
-          if !is_int_col[j] || !is_near_int(coeffs[j], config.tol) {
+        if coeffs[j] != 0.0 {
+          if !is_int_col[j] || coeffs[j] != d_round(coeffs[j]) {
             slack_int = false
             break
           }
@@ -297,7 +292,7 @@ pub fn solve_milp_with_cuts(
     row_coeffs.push(coeffs)
     row_rhs.push(delta)
     row_rels.push(Le)
-    row_int_slack.push(is_int_s && is_near_int(delta, config.tol))
+    row_int_slack.push(is_int_s && delta == d_round(delta))
   }
 
   // Step 3: Allocate slack, surplus, and artificial columns

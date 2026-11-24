@@ -33,6 +33,7 @@ pub(all) enum Status {
   InfeasibleOrUnbounded
   MaxIterations
   NodeLimit
+  NumericalError
 }
 
 ///|

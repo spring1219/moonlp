@@ -253,27 +253,51 @@ pub fn solve_lp(
   config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
   if needs_auto_scaling(model) {
-    let (sol, _) = solve_lp_relaxation_scaled(model, passes=6, config~)
-    if sol.status == Optimal && model.verify_lp_feasibility(sol, tol=1.0e-4) {
-      return sol
+    let (sol_s, _) = solve_lp_relaxation_scaled(model, passes=6, config~)
+    let viol_s = model.max_lp_violation(sol_s)
+    if sol_s.status == Optimal && viol_s <= config.tol {
+      return sol_s
     }
-    // Never blindly trust scaled Infeasible/Unbounded if unscaled LP finds a verified optimum
-    let raw_fb = solve_lp_unscaled(model, config)
-    if raw_fb.status == Optimal &&
-      model.verify_lp_feasibility(raw_fb, tol=config.tol * 100.0) {
-      return raw_fb
+    // Scaled LP either failed or violated config.tol (e.g. unscaling ULP drift):
+    // compare against unscaled LP and pick the cleaner verified solution!
+    let sol_u = solve_lp_unscaled(model, config)
+    let viol_u = model.max_lp_violation(sol_u)
+    if sol_u.status == Optimal && viol_u <= config.tol {
+      return sol_u
     }
-    if sol.status != Optimal {
-      return sol
+    if sol_s.status == Optimal && sol_u.status == Optimal {
+      if viol_u < viol_s {
+        if viol_u <= 1.0e-4 {
+          return sol_u
+        }
+      } else if viol_s <= 1.0e-4 {
+        return sol_s
+      }
+      return Solution::empty(NumericalError, sol_s.iterations + sol_u.iterations, 1)
     }
-    return raw_fb
+    if sol_u.status == Optimal && viol_u <= 1.0e-4 {
+      return sol_u
+    }
+    if sol_s.status == Optimal && viol_s <= 1.0e-4 {
+      return sol_s
+    }
+    if sol_s.status != Optimal {
+      return sol_s
+    }
+    return sol_u
   }
   let raw = solve_lp_unscaled(model, config)
-  if raw.status == Optimal && !model.verify_lp_feasibility(raw, tol=1.0e-4) {
-    let (scaled_sol, _) = solve_lp_relaxation_scaled(model, passes=6, config~)
-    if scaled_sol.status == Optimal &&
-      model.verify_lp_feasibility(scaled_sol, tol=1.0e-4) {
-      return scaled_sol
+  if raw.status == Optimal {
+    let viol_u = model.max_lp_violation(raw)
+    if viol_u > config.tol {
+      let (sol_s, _) = solve_lp_relaxation_scaled(model, passes=6, config~)
+      let viol_s = model.max_lp_violation(sol_s)
+      if sol_s.status == Optimal && viol_s < viol_u && viol_s <= 1.0e-4 {
+        return sol_s
+      }
+      if viol_u > 1.0e-4 {
+        return Solution::empty(NumericalError, raw.iterations, 1)
+      }
     }
   }
   raw
@@ -306,7 +330,7 @@ fn solve_lp_unscaled(
     let has_lb = v.lb > -inf_threshold
     let has_ub = v.ub < inf_threshold
 
-    if has_lb && has_ub && (v.ub - v.lb).abs() <= config.tol {
+    if has_lb && has_ub && v.lb >= v.ub {
       obj_offset = obj_offset + c_j * v.lb
       mappings.push(Fixed(v.lb))
     } else if has_lb {
@@ -594,7 +618,7 @@ fn solve_lp_unscaled(
     let bcol = basis[i]
     if bcol >= 0 && bcol < n_std {
       let val = tab[i][rhs_col]
-      std_x[bcol] = if val.abs() < config.tol { 0.0 } else { val }
+      std_x[bcol] = if val < 0.0 && val > -config.tol { 0.0 } else { val }
     }
   }
 
@@ -627,7 +651,7 @@ fn solve_lp_unscaled(
     let ucol = init_unit_col[i]
     let y_std = -tab[m_total][ucol]
     let y_user = y_std * row_signs[i] * sense_sign
-    dual.push(if y_user.abs() < config.tol { 0.0 } else { y_user })
+    dual.push(if y_user.abs() < 1.0e-15 { 0.0 } else { y_user })
   }
 
   let min_obj = -tab[m_total][rhs_col] + obj_offset

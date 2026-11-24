@@ -213,7 +213,11 @@ pub fn Model::verify_solution(
         }
       }
     }
-    obj_val = obj_val + v.obj * x
+    let obj_term = v.obj * x
+    obj_val = obj_val + obj_term
+    if !is_finite_double(obj_term) || !is_finite_double(obj_val) {
+      return false
+    }
   }
   if !is_finite_double(obj_val) ||
     (obj_val - sol.objective).abs() > tol * (1.0 + obj_val.abs()) {
@@ -224,10 +228,11 @@ pub fn Model::verify_solution(
     let mut lhs = 0.0
     for j = 0; j < c.terms.length(); j = j + 1 {
       let t = c.terms[j]
-      lhs = lhs + t.coeff * sol.primal[t.var_id.index]
-    }
-    if !is_finite_double(lhs) {
-      return false
+      let p_term = t.coeff * sol.primal[t.var_id.index]
+      lhs = lhs + p_term
+      if !is_finite_double(p_term) || !is_finite_double(lhs) {
+        return false
+      }
     }
     match c.relation {
       Le => if lhs > c.rhs + tol { return false }
@@ -239,55 +244,72 @@ pub fn Model::verify_solution(
 }
 
 ///|
-/// Verify LP primal feasibility (bounds + constraints + finiteness), ignoring integrality.
-fn Model::verify_lp_feasibility(
+/// Compute the exact maximum primal bound/constraint violation of an LP solution
+/// (ignoring integrality), or 1.0e300 if non-Optimal / non-finite / inconsistent objective.
+fn Model::max_lp_violation(
   self : Model,
   sol : Solution,
-  tol~ : Double = 1.0e-5,
-) -> Bool {
-  if sol.status != Optimal {
-    return false
+  obj_tol~ : Double = 1.0e-5,
+) -> Double {
+  if sol.status != Optimal ||
+    sol.primal.length() != self.vars.length() ||
+    !is_finite_double(sol.objective) {
+    return 1.0e300
   }
-  if sol.primal.length() != self.vars.length() {
-    return false
-  }
-  if !is_finite_double(sol.objective) {
-    return false
-  }
+  let mut max_v = 0.0
   let mut obj_val = self.obj_constant
   for i = 0; i < self.vars.length(); i = i + 1 {
     let x = sol.primal[i]
     if !is_finite_double(x) {
-      return false
+      return 1.0e300
     }
     let v = self.vars[i]
-    if x < v.lb - tol || x > v.ub + tol {
-      return false
+    if x < v.lb {
+      let d = v.lb - x
+      if d > max_v {
+        max_v = d
+      }
     }
-    obj_val = obj_val + v.obj * x
+    if x > v.ub {
+      let d = x - v.ub
+      if d > max_v {
+        max_v = d
+      }
+    }
+    let term = v.obj * x
+    obj_val = obj_val + term
+    if !is_finite_double(term) || !is_finite_double(obj_val) {
+      return 1.0e300
+    }
   }
-  if !is_finite_double(obj_val) ||
-    (obj_val - sol.objective).abs() >
-    tol * (1.0 + obj_val.abs() + self.obj_constant.abs()) {
-    return false
+  if (obj_val - sol.objective).abs() >
+    obj_tol * (1.0 + obj_val.abs() + self.obj_constant.abs()) {
+    return 1.0e300
   }
   for c_idx = 0; c_idx < self.constraints.length(); c_idx = c_idx + 1 {
     let c = self.constraints[c_idx]
     let mut lhs = 0.0
     for j = 0; j < c.terms.length(); j = j + 1 {
       let t = c.terms[j]
-      lhs = lhs + t.coeff * sol.primal[t.var_id.index]
+      let term = t.coeff * sol.primal[t.var_id.index]
+      lhs = lhs + term
+      if !is_finite_double(term) || !is_finite_double(lhs) {
+        return 1.0e300
+      }
     }
-    if !is_finite_double(lhs) {
-      return false
+    let viol = match c.relation {
+      Le => if lhs > c.rhs { lhs - c.rhs } else { 0.0 }
+      Ge => if lhs < c.rhs { c.rhs - lhs } else { 0.0 }
+      Eq => (lhs - c.rhs).abs()
     }
-    match c.relation {
-      Le => if lhs > c.rhs + tol { return false }
-      Ge => if lhs < c.rhs - tol { return false }
-      Eq => if (lhs - c.rhs).abs() > tol { return false }
+    if !is_finite_double(viol) {
+      return 1.0e300
+    }
+    if viol > max_v {
+      max_v = viol
     }
   }
-  true
+  max_v
 }
 
 ///|

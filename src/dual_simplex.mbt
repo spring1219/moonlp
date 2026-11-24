@@ -200,7 +200,7 @@ pub fn solve_lp_dual(
     if bcol >= 0 && bcol < n_orig {
       let val = tab[i][rhs_col]
       primal[bcol] = model.vars[bcol].lb +
-        (if val.abs() < config.tol { 0.0 } else { val })
+        (if val < 0.0 && val > -config.tol { 0.0 } else { val })
     }
   }
 
@@ -213,7 +213,7 @@ pub fn solve_lp_dual(
   for i = 0; i < m_user; i = i + 1 {
     let y_std = -tab[m_user][n_orig + i]
     let y_user = y_std * row_signs[i] * sense_sign
-    dual.push(if y_user.abs() < config.tol { 0.0 } else { y_user })
+    dual.push(if y_user.abs() < 1.0e-15 { 0.0 } else { y_user })
   }
 
   let final_obj = (-tab[m_user][rhs_col] + obj_offset) * sense_sign

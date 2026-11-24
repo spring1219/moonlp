@@ -43,7 +43,7 @@ fn d_sqrt(x : Double) -> Double {
 
 ///|
 fn is_fixed_var(v : VarSpec) -> Bool {
-  v.lb > -inf_threshold && v.ub < inf_threshold && (v.ub - v.lb).abs() <= 1.0e-12
+  v.lb > -inf_threshold && v.ub < inf_threshold && v.lb == v.ub
 }
 
 ///|

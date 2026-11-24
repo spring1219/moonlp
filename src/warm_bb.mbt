@@ -153,7 +153,7 @@ pub fn solve_milp_warm(
     if eff_lb <= -inf_threshold {
       return solve_milp(model, config~)
     }
-    let fixed_j = eff_ub < inf_threshold && (eff_ub - eff_lb).abs() <= 1.0e-12
+    let fixed_j = eff_ub < inf_threshold && eff_lb == eff_ub
     let c_j = v.obj * sense_sign
     lbs.push(eff_lb)
     is_fixed.push(fixed_j)
@@ -461,14 +461,14 @@ pub fn solve_milp_warm(
         None => ()
       }
       if !fathomed {
-        // Sub-tolerance fractionality or degraded repair: branch on any fractional integer var!
+        // Sub-tolerance fractionality or degraded repair: branch strictly above dual-simplex tol!
         let mut sub_dist = 0.0
         for i = 0; i < node.m; i = i + 1 {
           let bc = node.basis[i]
           if bc >= 0 && bc < n_std && is_int_col[bc] {
             let val = node.tab[i][node.num_cols]
             let dist = (val - d_round(val)).abs()
-            if dist > 1.0e-14 && dist > sub_dist {
+            if dist > config.tol && dist > sub_dist {
               sub_dist = dist
               branch_row = i
             }
@@ -525,16 +525,20 @@ pub fn solve_milp_warm(
           Optimal
         } else if hit_max_iters && nodes_explored < config.max_nodes {
           MaxIterations
-        } else {
+        } else if nodes_explored >= config.max_nodes {
           NodeLimit
+        } else {
+          NumericalError
         }
         { ..sol, status: st, iterations: total_iters, nodes_explored, mip_gap: gap, }
       }
     None =>
       if hit_max_iters {
         Solution::empty(MaxIterations, total_iters, nodes_explored)
-      } else if nodes_explored >= config.max_nodes || has_unproved {
+      } else if nodes_explored >= config.max_nodes {
         Solution::empty(NodeLimit, total_iters, nodes_explored)
+      } else if has_unproved {
+        Solution::empty(NumericalError, total_iters, nodes_explored)
       } else {
         Solution::empty(Infeasible, total_iters, nodes_explored)
       }

@@ -253,7 +253,7 @@ pub fn solve_milp_branch_and_cut(
         },
       )
     }
-    let fixed_j = eff_ub < inf_threshold && (eff_ub - eff_lb).abs() <= 1.0e-12
+    let fixed_j = eff_ub < inf_threshold && eff_lb == eff_ub
     let c_j = v.obj * sense_sign
     lbs.push(eff_lb)
     is_fixed.push(fixed_j)
@@ -314,11 +314,13 @@ pub fn solve_milp_branch_and_cut(
         Eq => Eq
       }
     }
-    let mut slack_int = is_near_int(rhs, config.tol)
+    // A slack/surplus variable is provably integral ONLY if RHS is an exact integer
+    // and EVERY nonzero term (coeffs[j] != 0.0) is an integer variable with an exact integer coeff.
+    let mut slack_int = rhs == d_round(rhs)
     if slack_int {
       for j = 0; j < n_std; j = j + 1 {
-        if coeffs[j].abs() > config.tol {
-          if !is_int_col[j] || !is_near_int(coeffs[j], config.tol) {
+        if coeffs[j] != 0.0 {
+          if !is_int_col[j] || coeffs[j] != d_round(coeffs[j]) {
             slack_int = false
             break
           }
@@ -338,7 +340,7 @@ pub fn solve_milp_branch_and_cut(
     row_coeffs.push(coeffs)
     row_rhs.push(delta)
     row_rels.push(Le)
-    row_int_slack.push(is_int_s && is_near_int(delta, config.tol))
+    row_int_slack.push(is_int_s && delta == d_round(delta))
   }
 
   let mut num_cols = n_std
@@ -765,14 +767,15 @@ pub fn solve_milp_branch_and_cut(
         None => ()
       }
       if !fathomed {
-        // Rounding failed or degraded objective vs LP bound: branch on any sub-tol fractional var!
+        // Rounding failed or degraded objective vs LP bound: branch on any sub-tol fractional var
+        // strictly above dual-simplex feasibility tol so child bound cuts force strict progress!
         let mut sub_score = -1.0
         for i = 0; i < node.m; i = i + 1 {
           let bc = node.basis[i]
           if bc >= 0 && bc < n_std && is_int_col[bc] {
             let val = node.tab[i][node.num_cols]
             let dist = (val - d_round(val)).abs()
-            if dist > 1.0e-14 {
+            if dist > config.tol {
               let score = dist * (1.0 + model.vars[bc].obj.abs())
               if score > sub_score {
                 sub_score = score
@@ -879,8 +882,10 @@ pub fn solve_milp_branch_and_cut(
           Optimal
         } else if hit_max_iters && nodes_explored < config.max_nodes {
           MaxIterations
-        } else {
+        } else if nodes_explored >= config.max_nodes {
           NodeLimit
+        } else {
+          NumericalError
         }
         (
           { ..sol, status: st, iterations: total_pivots, nodes_explored, mip_gap: gap, },
@@ -892,8 +897,10 @@ pub fn solve_milp_branch_and_cut(
         Solution::empty(
           if hit_max_iters {
             MaxIterations
-          } else if nodes_explored >= config.max_nodes || has_unproved {
+          } else if nodes_explored >= config.max_nodes {
             NodeLimit
+          } else if has_unproved {
+            NumericalError
           } else {
             Infeasible
           },

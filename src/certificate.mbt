@@ -68,7 +68,11 @@ pub fn Model::certify_lp_solution(
       return invalid
     }
     let v = self.vars[j]
-    p_lin = p_lin + v.obj * x
+    let term_obj = v.obj * x
+    p_lin = p_lin + term_obj
+    if !is_finite_double(term_obj) || !is_finite_double(p_lin) {
+      return invalid
+    }
     if x < v.lb {
       let viol = v.lb - x
       if viol > max_pv {
@@ -109,18 +113,27 @@ pub fn Model::certify_lp_solution(
     for k = 0; k < c.terms.length(); k = k + 1 {
       let t = c.terms[k]
       let idx = t.var_id.index
-      lhs = lhs + t.coeff * sol.primal[idx]
-      at_y[idx] = at_y[idx] + t.coeff * y
-      at_y_abs[idx] = at_y_abs[idx] + (t.coeff * y).abs()
-    }
-    if !is_finite_double(lhs) {
-      return invalid
+      let p_term = t.coeff * sol.primal[idx]
+      lhs = lhs + p_term
+      let d_term = t.coeff * y
+      at_y[idx] = at_y[idx] + d_term
+      at_y_abs[idx] = at_y_abs[idx] + d_term.abs()
+      if !is_finite_double(p_term) ||
+        !is_finite_double(lhs) ||
+        !is_finite_double(d_term) ||
+        !is_finite_double(at_y[idx]) ||
+        !is_finite_double(at_y_abs[idx]) {
+        return invalid
+      }
     }
 
     let slack = match c.relation {
       Le => c.rhs - lhs
       Ge => lhs - c.rhs
       Eq => -(lhs - c.rhs).abs()
+    }
+    if !is_finite_double(slack) {
+      return invalid
     }
     if slack < 0.0 {
       let viol = -slack
@@ -158,6 +171,14 @@ pub fn Model::certify_lp_solution(
 
     let abs_res = (lhs - c.rhs).abs()
     let comp = (y * (lhs - c.rhs)).abs()
+    let d_term_rhs = y * c.rhs
+    d_lin = d_lin + d_term_rhs
+    if !is_finite_double(abs_res) ||
+      !is_finite_double(comp) ||
+      !is_finite_double(d_term_rhs) ||
+      !is_finite_double(d_lin) {
+      return invalid
+    }
     if comp > max_comp {
       max_comp = comp
     }
@@ -165,7 +186,6 @@ pub fn Model::certify_lp_solution(
     if min_pair > tol || comp > tol * (1.0 + y.abs()) {
       comp_ok = false
     }
-    d_lin = d_lin + y * c.rhs
   }
 
   // 3. Per-variable KKT stationarity & bound multipliers (strictly local scale per variable!)
@@ -174,6 +194,9 @@ pub fn Model::certify_lp_solution(
     let x = sol.primal[j]
     let s_j = sense_sign * (v.obj - at_y[j]) // reduced cost in minimization space
     let local_scale = 1.0 + v.obj.abs() + at_y_abs[j]
+    if !is_finite_double(s_j) || !is_finite_double(local_scale) {
+      return invalid
+    }
     let has_lb = v.lb > -inf_threshold
     let has_ub = v.ub < inf_threshold
 
@@ -193,6 +216,9 @@ pub fn Model::certify_lp_solution(
             max_dv = s_j
           }
           let bc = (s_j * gap_lb).abs()
+          if !is_finite_double(bc) {
+            return invalid
+          }
           if bc > max_comp {
             max_comp = bc
           }
@@ -203,7 +229,11 @@ pub fn Model::certify_lp_solution(
             comp_ok = false
           }
         }
-        d_lin = d_lin + sense_sign * s_j * v.lb
+        let lb_contrib = sense_sign * s_j * v.lb
+        d_lin = d_lin + lb_contrib
+        if !is_finite_double(lb_contrib) || !is_finite_double(d_lin) {
+          return invalid
+        }
       }
     } else if s_j < 0.0 {
       // If s_j < 0, upper bound must be finite and active (x == ub)
@@ -222,6 +252,9 @@ pub fn Model::certify_lp_solution(
             max_dv = mag
           }
           let bc = (mag * gap_ub).abs()
+          if !is_finite_double(bc) {
+            return invalid
+          }
           if bc > max_comp {
             max_comp = bc
           }
@@ -232,7 +265,11 @@ pub fn Model::certify_lp_solution(
             comp_ok = false
           }
         }
-        d_lin = d_lin - sense_sign * mag * v.ub
+        let ub_contrib = sense_sign * mag * v.ub
+        d_lin = d_lin - ub_contrib
+        if !is_finite_double(ub_contrib) || !is_finite_double(d_lin) {
+          return invalid
+        }
       }
     }
   }
@@ -241,6 +278,14 @@ pub fn Model::certify_lp_solution(
   let lin_scale = 1.0 +
     (if p_lin.abs() > d_lin.abs() { p_lin.abs() } else { d_lin.abs() })
   let gap = (p_lin - d_lin).abs()
+  if !is_finite_double(d_obj) ||
+    !is_finite_double(lin_scale) ||
+    !is_finite_double(gap) ||
+    !is_finite_double(max_pv) ||
+    !is_finite_double(max_dv) ||
+    !is_finite_double(max_comp) {
+    return invalid
+  }
   let primal_ok = max_pv <= tol
   let gap_ok = gap <= tol * lin_scale
 
