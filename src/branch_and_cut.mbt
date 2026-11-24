@@ -150,7 +150,8 @@ fn try_rounding_heuristic(
   for j = 0; j < n_orig; j = j + 1 {
     exact_obj = exact_obj + model.vars[j].obj * cand_x[j]
   }
-  if exact_obj * sense_sign >= best_min_obj - 1.0e-7 {
+  let h_tol = 1.0e-12 * best_min_obj.abs() + 1.0e-15
+  if exact_obj * sense_sign >= best_min_obj - h_tol {
     return None
   }
   let sol : Solution = {
@@ -198,6 +199,17 @@ pub fn solve_milp_branch_and_cut(
       },
     )
   }
+  if has_extreme_scale(model) {
+    let sol = solve_milp(model, config~)
+    return (
+      sol,
+      {
+        ..empty_stats,
+        nodes_explored: sol.nodes_explored,
+        total_pivots: sol.iterations,
+      },
+    )
+  }
 
   let n_orig = model.vars.length()
   let m_user = model.constraints.length()
@@ -207,6 +219,7 @@ pub fn solve_milp_branch_and_cut(
   }
 
   let lbs : Array[Double] = []
+  let col_ubs : Array[Double] = []
   let std_obj : Array[Double] = []
   let is_int_col : Array[Bool] = []
   let ub_rows : Array[(Int32, Double, Bool)] = []
@@ -240,6 +253,13 @@ pub fn solve_milp_branch_and_cut(
     }
     let c_j = v.obj * sense_sign
     lbs.push(eff_lb)
+    col_ubs.push(
+      if eff_ub < inf_threshold {
+        eff_ub - eff_lb
+      } else {
+        1.0e300
+      },
+    )
     std_obj.push(c_j)
     let is_int = is_integer_var(v.kind)
     is_int_col.push(is_int)
@@ -403,7 +423,7 @@ pub fn solve_milp_branch_and_cut(
     if p1_st != Optimal {
       return (Solution::empty(p1_st, total_pivots, 1), empty_stats)
     }
-    if -tab[m][rhs_col] > config.tol * 100.0 {
+    if -tab[m][rhs_col] > config.tol {
       return (Solution::empty(Infeasible, total_pivots, 1), empty_stats)
     }
     for i = 0; i < m; i = i + 1 {
@@ -484,21 +504,28 @@ pub fn solve_milp_branch_and_cut(
 
     let rhs_val = tab[best_r][rhs_col]
     let f0 = rhs_val - d_floor(rhs_val)
+    if f0 <= 1.0e-5 || 1.0 - f0 <= 1.0e-5 {
+      break
+    }
     let scale = f0 / (1.0 - f0)
     let new_col = num_cols
+    let mut f0_eff = f0 - 1.0e-11
     let mut cut_has_coeff = false
+    let mut cut_safe = true
+    let mut max_g = 0.0
+    let mut min_g = 1.0e308
     let cut_row = Array::make(num_cols + 2, 0.0)
     for j = 0; j < new_col; j = j + 1 {
       if !col_active[j] || j == basis[best_r] {
         continue
       }
       let a = tab[best_r][j]
-      if a.abs() <= config.tol {
+      if a == 0.0 {
         continue
       }
       let gj = if is_int_col[j] {
         let fj = a - d_floor(a)
-        if fj <= config.tol || 1.0 - fj <= config.tol {
+        if fj <= 0.0 || fj >= 1.0 {
           0.0
         } else if fj <= f0 {
           fj
@@ -510,12 +537,29 @@ pub fn solve_milp_branch_and_cut(
       } else {
         -scale * a
       }
-      if gj > config.tol {
+      if gj > 1.0e-12 {
         cut_row[j] = -gj
         cut_has_coeff = true
+        if gj > max_g {
+          max_g = gj
+        }
+        if gj < min_g {
+          min_g = gj
+        }
+      } else if gj > 0.0 {
+        if j < col_ubs.length() && col_ubs[j] < inf_threshold {
+          f0_eff = f0_eff - gj * col_ubs[j]
+        } else {
+          cut_safe = false
+          break
+        }
       }
     }
-    if !cut_has_coeff {
+    if !cut_safe ||
+      !cut_has_coeff ||
+      f0_eff <= 1.0e-6 ||
+      max_g <= 1.0e-12 ||
+      max_g / min_g > 1.0e12 {
       break
     }
 
@@ -528,7 +572,7 @@ pub fn solve_milp_branch_and_cut(
       row_i.push(old_rhs)
     }
     cut_row[new_col] = 1.0
-    cut_row[rhs_col] = -f0
+    cut_row[rhs_col] = -f0_eff
     let saved_obj = tab[m]
     tab[m] = cut_row
     tab.push(saved_obj)
@@ -579,6 +623,7 @@ pub fn solve_milp_branch_and_cut(
     { tab, basis, col_active, m, num_cols, bound: root_min_bound, depth: 0, },
   ]
   let mut best_min_obj = 1.0e308
+  let mut best_pruned_bound = 1.0e308
   let mut best_sol : Solution? = None
   let mut nodes_explored = 0
   let mut heuristic_hits = 0
@@ -587,7 +632,11 @@ pub fn solve_milp_branch_and_cut(
 
   while stack.length() > 0 && nodes_explored < config.max_nodes {
     let node = pop_hybrid_bc_node(stack, best_sol is Some(_), nodes_explored)
-    if best_sol is Some(_) && node.bound >= best_min_obj - config.mip_gap_tol {
+    if best_sol is Some(_) &&
+      can_prune_by_bound(node.bound, best_min_obj, config.mip_gap_tol) {
+      if node.bound < best_pruned_bound {
+        best_pruned_bound = node.bound
+      }
       continue
     }
 
@@ -611,7 +660,11 @@ pub fn solve_milp_branch_and_cut(
     }
 
     let min_obj = -node.tab[node.m][node.num_cols] + obj_offset
-    if best_sol is Some(_) && min_obj >= best_min_obj - config.mip_gap_tol {
+    if best_sol is Some(_) &&
+      can_prune_by_bound(min_obj, best_min_obj, config.mip_gap_tol) {
+      if min_obj < best_pruned_bound {
+        best_pruned_bound = min_obj
+      }
       continue
     }
 
@@ -644,10 +697,12 @@ pub fn solve_milp_branch_and_cut(
           raw_primal[bc] = lbs[bc] + node.tab[i][node.num_cols]
         }
       }
+      let mut fathomed = false
       match verify_or_repair_int_candidate(model, raw_primal, config) {
-        Some(cand) =>
-          if cand.objective * sense_sign < best_min_obj {
-            best_min_obj = cand.objective * sense_sign
+        Some(cand) => {
+          let cand_min = cand.objective * sense_sign
+          if cand_min < best_min_obj {
+            best_min_obj = cand_min
             best_sol = Some({
               ..cand,
               iterations: total_pivots,
@@ -655,26 +710,34 @@ pub fn solve_milp_branch_and_cut(
               mip_gap: 0.0,
             })
           }
-        None => {
-          // Rounding broke original constraints (e.g., 1e8 * 0.9999995): branch on sub-tol var!
-          let mut sub_score = -1.0
-          for i = 0; i < node.m; i = i + 1 {
-            let bc = node.basis[i]
-            if bc >= 0 && bc < n_std && is_int_col[bc] {
-              let val = node.tab[i][node.num_cols]
-              let dist = (val - d_round(val)).abs()
-              if dist > 1.0e-12 {
-                let score = dist * (1.0 + model.vars[bc].obj.abs())
-                if score > sub_score {
-                  sub_score = score
-                  branch_row = i
-                }
+          if candidate_fathoms_node(cand_min, min_obj, config.mip_gap_tol) {
+            fathomed = true
+            if min_obj < best_pruned_bound {
+              best_pruned_bound = min_obj
+            }
+          }
+        }
+        None => ()
+      }
+      if !fathomed {
+        // Rounding failed or degraded objective vs LP bound: branch on any sub-tol fractional var!
+        let mut sub_score = -1.0
+        for i = 0; i < node.m; i = i + 1 {
+          let bc = node.basis[i]
+          if bc >= 0 && bc < n_std && is_int_col[bc] {
+            let val = node.tab[i][node.num_cols]
+            let dist = (val - d_round(val)).abs()
+            if dist > 1.0e-14 {
+              let score = dist * (1.0 + model.vars[bc].obj.abs())
+              if score > sub_score {
+                sub_score = score
+                branch_row = i
               }
             }
           }
-          if branch_row == -1 {
-            has_unproved = true
-          }
+        }
+        if branch_row == -1 {
+          has_unproved = true
         }
       }
     }
@@ -698,7 +761,10 @@ pub fn solve_milp_branch_and_cut(
           best_min_obj = hsol.objective * sense_sign
           best_sol = Some(hsol)
           heuristic_hits = heuristic_hits + 1
-          if min_obj >= best_min_obj - config.mip_gap_tol {
+          if can_prune_by_bound(min_obj, best_min_obj, config.mip_gap_tol) {
+            if min_obj < best_pruned_bound {
+              best_pruned_bound = min_obj
+            }
             continue
           }
         }
@@ -732,29 +798,36 @@ pub fn solve_milp_branch_and_cut(
   match best_sol {
     Some(sol) =>
       if stack.length() == 0 && !has_unproved {
+        let eff_bound = if best_pruned_bound < best_min_obj {
+          best_pruned_bound
+        } else {
+          best_min_obj
+        }
+        let final_gap = compute_mip_gap(best_min_obj, eff_bound)
         (
-          { ..sol, status: Optimal, iterations: total_pivots, nodes_explored, mip_gap: 0.0, },
+          {
+            ..sol,
+            status: Optimal,
+            iterations: total_pivots,
+            nodes_explored,
+            mip_gap: final_gap,
+          },
           stats,
         )
       } else {
-        let mut best_rem = best_min_obj
-        if stack.length() > 0 {
-          best_rem = stack[0].bound
-          for i = 1; i < stack.length(); i = i + 1 {
-            if stack[i].bound < best_rem {
-              best_rem = stack[i].bound
-            }
+        let mut best_rem = best_pruned_bound
+        for i = 0; i < stack.length(); i = i + 1 {
+          if stack[i].bound < best_rem {
+            best_rem = stack[i].bound
           }
         }
-        let denom = if best_min_obj.abs() > 1.0e-9 {
-          best_min_obj.abs()
-        } else {
-          1.0
+        if best_rem > best_min_obj {
+          best_rem = best_min_obj
         }
         let gap = if has_unproved && stack.length() == 0 {
           1.0
         } else {
-          (best_min_obj - best_rem).abs() / denom
+          compute_mip_gap(best_min_obj, best_rem)
         }
         let st = if !has_unproved && gap <= config.mip_gap_tol {
           Optimal

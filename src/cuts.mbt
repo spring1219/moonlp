@@ -46,6 +46,10 @@ pub fn solve_milp_with_cuts(
       },
     )
   }
+  if has_extreme_scale(model) {
+    let sol = solve_milp(model, config~)
+    return (sol, empty_report)
+  }
 
   let n_orig = model.vars.length()
   let m_user = model.constraints.length()
@@ -56,6 +60,7 @@ pub fn solve_milp_with_cuts(
 
   // Step 1: Standardize non-negative shifted variables & track which columns are integer
   let lbs : Array[Double] = []
+  let col_ubs : Array[Double] = []
   let std_obj : Array[Double] = []
   let is_int_col : Array[Bool] = []
   let ub_rows : Array[(Int32, Double, Bool)] = [] // (col, delta, is_int_slack)
@@ -83,6 +88,13 @@ pub fn solve_milp_with_cuts(
     }
     let c_j = v.obj * sense_sign
     lbs.push(eff_lb)
+    col_ubs.push(
+      if eff_ub < inf_threshold {
+        eff_ub - eff_lb
+      } else {
+        1.0e300
+      },
+    )
     std_obj.push(c_j)
     let is_int = is_integer_var(v.kind)
     is_int_col.push(is_int)
@@ -247,7 +259,7 @@ pub fn solve_milp_with_cuts(
     if p1_st != Optimal {
       return (Solution::empty(p1_st, total_iters, 1), empty_report)
     }
-    if -tab[m][rhs_col] > config.tol * 100.0 {
+    if -tab[m][rhs_col] > config.tol {
       return (Solution::empty(Infeasible, total_iters, 1), empty_report)
     }
     for i = 0; i < m; i = i + 1 {
@@ -335,35 +347,32 @@ pub fn solve_milp_with_cuts(
       break
     }
 
-    // Generate GMI cut from row `best_r`
+    // Generate numerically safe GMI cut from row `best_r` (build & validate BEFORE expanding tableau)
     let rhs_val = tab[best_r][rhs_col]
     let f0 = rhs_val - d_floor(rhs_val)
+    if f0 <= 1.0e-5 || 1.0 - f0 <= 1.0e-5 {
+      break
+    }
     let scale = f0 / (1.0 - f0)
     let new_col = num_cols
-    num_cols = num_cols + 1
-    rhs_col = num_cols
-
-    // Expand all existing rows + obj row by 1 column before RHS
-    for i = 0; i <= m; i = i + 1 {
-      let row_i = tab[i]
-      let old_rhs = row_i[new_col]
-      row_i[new_col] = 0.0
-      row_i.push(old_rhs)
-    }
-
-    let cut_row = Array::make(num_cols + 1, 0.0)
+    let cut_row = Array::make(num_cols + 2, 0.0)
+    let mut f0_eff = f0 - 1.0e-11
     let mut cut_has_coeff = false
+    let mut cut_safe = true
+    let mut max_g = 0.0
+    let mut min_g = 1.0e308
+
     for j = 0; j < new_col; j = j + 1 {
       if !col_active[j] || j == basis[best_r] {
         continue
       }
       let a = tab[best_r][j]
-      if a.abs() <= config.tol {
+      if a == 0.0 {
         continue
       }
       let gj = if is_int_col[j] {
         let fj = a - d_floor(a)
-        if fj <= config.tol || 1.0 - fj <= config.tol {
+        if fj <= 0.0 || fj >= 1.0 {
           0.0
         } else if fj <= f0 {
           fj
@@ -375,20 +384,45 @@ pub fn solve_milp_with_cuts(
       } else {
         -scale * a
       }
-      if gj > config.tol {
+      if gj > 1.0e-12 {
         cut_row[j] = -gj
         cut_has_coeff = true
+        if gj > max_g {
+          max_g = gj
+        }
+        if gj < min_g {
+          min_g = gj
+        }
+      } else if gj > 0.0 {
+        // Never silently drop a positive GMI coefficient: only relax RHS if col has finite upper bound
+        if j < col_ubs.length() && col_ubs[j] < inf_threshold {
+          f0_eff = f0_eff - gj * col_ubs[j]
+        } else {
+          cut_safe = false
+          break
+        }
       }
     }
 
-    if !cut_has_coeff {
-      // Degenerate cut; abort cut loop and fall back to B&B
-      let _ = tab[m].pop()
+    if !cut_safe ||
+      !cut_has_coeff ||
+      f0_eff <= 1.0e-6 ||
+      max_g <= 1.0e-12 ||
+      max_g / min_g > 1.0e12 {
+      // Unsafe or ill-conditioned cut; abort cut loop and fall back to exact B&B
       break
     }
 
+    num_cols = num_cols + 1
+    rhs_col = num_cols
+    for i = 0; i <= m; i = i + 1 {
+      let row_i = tab[i]
+      let old_rhs = row_i[new_col]
+      row_i[new_col] = 0.0
+      row_i.push(old_rhs)
+    }
     cut_row[new_col] = 1.0
-    cut_row[rhs_col] = -f0
+    cut_row[rhs_col] = -f0_eff
 
     // Insert cut_row before obj_row
     let saved_obj = tab[m]
@@ -433,7 +467,8 @@ pub fn solve_milp_with_cuts(
     }
   }
 
-  let cut_lp_obj = (-tab[m][rhs_col] + obj_offset) * sense_sign
+  let cut_lp_min = -tab[m][rhs_col] + obj_offset
+  let cut_lp_obj = cut_lp_min * sense_sign
 
   if is_integral {
     let raw_primal = Array::make(n_orig, 0.0)
@@ -448,23 +483,27 @@ pub fn solve_milp_with_cuts(
     }
     match verify_or_repair_int_candidate(model, raw_primal, config) {
       Some(cand) => {
-        let root_sol : Solution = {
-          ..cand,
-          status: Optimal,
-          iterations: total_iters,
-          nodes_explored: 1,
-          mip_gap: 0.0,
+        let cand_min = cand.objective * sense_sign
+        // Only declare root optimality if the verified candidate actually attains the LP bound!
+        if candidate_fathoms_node(cand_min, cut_lp_min, config.mip_gap_tol) {
+          let root_sol : Solution = {
+            ..cand,
+            status: Optimal,
+            iterations: total_iters,
+            nodes_explored: 1,
+            mip_gap: compute_mip_gap(cand_min, cut_lp_min),
+          }
+          return (
+            root_sol,
+            {
+              cuts_added,
+              root_lp_obj,
+              cut_lp_obj: cand.objective,
+              dual_pivots,
+              solved_at_root: true,
+            },
+          )
         }
-        return (
-          root_sol,
-          {
-            cuts_added,
-            root_lp_obj,
-            cut_lp_obj: cand.objective,
-            dual_pivots,
-            solved_at_root: true,
-          },
-        )
       }
       None => ()
     }

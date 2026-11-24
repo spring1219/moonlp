@@ -116,6 +116,9 @@ pub fn solve_milp_warm(
   if !model.has_integer_vars() {
     return solve_lp(model, config~)
   }
+  if has_extreme_scale(model) {
+    return solve_milp(model, config~)
+  }
 
   let n_orig = model.vars.length()
   let m_user = model.constraints.length()
@@ -294,7 +297,7 @@ pub fn solve_milp_warm(
     if p1_st != Optimal {
       return Solution::empty(p1_st, total_iters, 1)
     }
-    if -tab[m_total][rhs_col] > config.tol * 100.0 {
+    if -tab[m_total][rhs_col] > config.tol {
       return Solution::empty(Infeasible, total_iters, 1)
     }
     for i = 0; i < m_total; i = i + 1 {
@@ -352,6 +355,7 @@ pub fn solve_milp_warm(
     { tab, basis, col_active, m: m_total, num_cols, bound: root_bound, },
   ]
   let mut best_min_obj = 1.0e308
+  let mut best_pruned_bound = 1.0e308
   let mut best_sol : Solution? = None
   let mut nodes_explored = 0
   let mut hit_max_iters = false
@@ -359,7 +363,11 @@ pub fn solve_milp_warm(
 
   while queue.length() > 0 && nodes_explored < config.max_nodes {
     let node = pop_best_warm_node(queue)
-    if best_sol is Some(_) && node.bound >= best_min_obj - config.mip_gap_tol {
+    if best_sol is Some(_) &&
+      can_prune_by_bound(node.bound, best_min_obj, config.mip_gap_tol) {
+      if node.bound < best_pruned_bound {
+        best_pruned_bound = node.bound
+      }
       continue
     }
 
@@ -385,7 +393,11 @@ pub fn solve_milp_warm(
     }
 
     let min_obj = -node.tab[node.m][node.num_cols] + obj_offset
-    if best_sol is Some(_) && min_obj >= best_min_obj - config.mip_gap_tol {
+    if best_sol is Some(_) &&
+      can_prune_by_bound(min_obj, best_min_obj, config.mip_gap_tol) {
+      if min_obj < best_pruned_bound {
+        best_pruned_bound = min_obj
+      }
       continue
     }
 
@@ -415,10 +427,12 @@ pub fn solve_milp_warm(
           raw_primal[bc] = lbs[bc] + node.tab[i][node.num_cols]
         }
       }
+      let mut fathomed = false
       match verify_or_repair_int_candidate(model, raw_primal, config) {
-        Some(cand) =>
-          if cand.objective * sense_sign < best_min_obj {
-            best_min_obj = cand.objective * sense_sign
+        Some(cand) => {
+          let cand_min = cand.objective * sense_sign
+          if cand_min < best_min_obj {
+            best_min_obj = cand_min
             best_sol = Some({
               ..cand,
               iterations: total_iters,
@@ -426,23 +440,31 @@ pub fn solve_milp_warm(
               mip_gap: 0.0,
             })
           }
-        None => {
-          // Sub-tolerance fractionality broke a large-coefficient constraint: branch on it!
-          let mut sub_dist = 0.0
-          for i = 0; i < node.m; i = i + 1 {
-            let bc = node.basis[i]
-            if bc >= 0 && bc < n_std && is_int_col[bc] {
-              let val = node.tab[i][node.num_cols]
-              let dist = (val - d_round(val)).abs()
-              if dist > 1.0e-12 && dist > sub_dist {
-                sub_dist = dist
-                branch_row = i
-              }
+          if candidate_fathoms_node(cand_min, min_obj, config.mip_gap_tol) {
+            fathomed = true
+            if min_obj < best_pruned_bound {
+              best_pruned_bound = min_obj
             }
           }
-          if branch_row == -1 {
-            has_unproved = true
+        }
+        None => ()
+      }
+      if !fathomed {
+        // Sub-tolerance fractionality or degraded repair: branch on any fractional integer var!
+        let mut sub_dist = 0.0
+        for i = 0; i < node.m; i = i + 1 {
+          let bc = node.basis[i]
+          if bc >= 0 && bc < n_std && is_int_col[bc] {
+            let val = node.tab[i][node.num_cols]
+            let dist = (val - d_round(val)).abs()
+            if dist > 1.0e-14 && dist > sub_dist {
+              sub_dist = dist
+              branch_row = i
+            }
           }
+        }
+        if branch_row == -1 {
+          has_unproved = true
         }
       }
     }
@@ -460,26 +482,33 @@ pub fn solve_milp_warm(
   match best_sol {
     Some(sol) =>
       if queue.length() == 0 && !has_unproved {
-        { ..sol, status: Optimal, iterations: total_iters, nodes_explored, mip_gap: 0.0, }
+        let eff_bound = if best_pruned_bound < best_min_obj {
+          best_pruned_bound
+        } else {
+          best_min_obj
+        }
+        let final_gap = compute_mip_gap(best_min_obj, eff_bound)
+        {
+          ..sol,
+          status: Optimal,
+          iterations: total_iters,
+          nodes_explored,
+          mip_gap: final_gap,
+        }
       } else {
-        let mut best_rem = best_min_obj
-        if queue.length() > 0 {
-          best_rem = queue[0].bound
-          for i = 1; i < queue.length(); i = i + 1 {
-            if queue[i].bound < best_rem {
-              best_rem = queue[i].bound
-            }
+        let mut best_rem = best_pruned_bound
+        for i = 0; i < queue.length(); i = i + 1 {
+          if queue[i].bound < best_rem {
+            best_rem = queue[i].bound
           }
         }
-        let denom = if best_min_obj.abs() > 1.0e-9 {
-          best_min_obj.abs()
-        } else {
-          1.0
+        if best_rem > best_min_obj {
+          best_rem = best_min_obj
         }
         let gap = if has_unproved && queue.length() == 0 {
           1.0
         } else {
-          (best_min_obj - best_rem).abs() / denom
+          compute_mip_gap(best_min_obj, best_rem)
         }
         let st = if !has_unproved && gap <= config.mip_gap_tol {
           Optimal
