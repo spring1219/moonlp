@@ -17,26 +17,30 @@ priv enum VarMapping {
 }
 
 ///|
-/// Sparse-aware Gauss-Jordan pivot: collects nonzero columns of the pivot row first
-/// to skip zero multiplications on sparse LP tableaux (3x-8x faster on Netlib/MILP).
-fn pivot_tableau(
+/// Zero-allocation sparse-aware Gauss-Jordan pivot using reusable scratch buffers.
+fn pivot_tableau_buf(
   tab : Array[Array[Double]],
   basis : Array[Int32],
   m : Int32,
   rhs_col : Int32,
   pivot_row : Int32,
   pivot_col : Int32,
+  nz_cols : Array[Int32],
+  nz_vals : Array[Double],
 ) -> Unit {
   let pv = tab[pivot_row][pivot_col]
   let inv_pv = 1.0 / pv
   let prow = tab[pivot_row]
-  let nz_cols : Array[Int32] = []
+  nz_cols.clear()
+  nz_vals.clear()
   for j = 0; j <= rhs_col; j = j + 1 {
     let v = prow[j]
     if v != 0.0 {
-      prow[j] = v * inv_pv
+      let scaled = v * inv_pv
+      prow[j] = scaled
       if j != pivot_col {
         nz_cols.push(j)
+        nz_vals.push(scaled)
       }
     }
   }
@@ -50,13 +54,29 @@ fn pivot_tableau(
         let row_i = tab[i]
         for k = 0; k < nz_len; k = k + 1 {
           let j = nz_cols[k]
-          row_i[j] = row_i[j] - factor * prow[j]
+          row_i[j] = row_i[j] - factor * nz_vals[k]
         }
         row_i[pivot_col] = 0.0
       }
     }
   }
   basis[pivot_row] = pivot_col
+}
+
+///|
+fn pivot_tableau(
+  tab : Array[Array[Double]],
+  basis : Array[Int32],
+  m : Int32,
+  rhs_col : Int32,
+  pivot_row : Int32,
+  pivot_col : Int32,
+) -> Unit {
+  let nz_cols : Array[Int32] = []
+  let nz_vals : Array[Double] = []
+  pivot_tableau_buf(
+    tab, basis, m, rhs_col, pivot_row, pivot_col, nz_cols, nz_vals,
+  )
 }
 
 ///|
@@ -74,6 +94,8 @@ fn run_simplex_phase(
   let mut iters = 0
   let mut stall_count = 0
   let mut prev_obj = tab[m][rhs_col]
+  let nz_cols : Array[Int32] = []
+  let nz_vals : Array[Double] = []
 
   while iters < config.max_iters {
     let use_bland = stall_count >= config.bland_stall_limit
@@ -138,8 +160,10 @@ fn run_simplex_phase(
       return (Unbounded, iters)
     }
 
-    // 3. Pivot
-    pivot_tableau(tab, basis, m, rhs_col, leave_row, enter_col)
+    // 3. Pivot (zero-allocation sparse update)
+    pivot_tableau_buf(
+      tab, basis, m, rhs_col, leave_row, enter_col, nz_cols, nz_vals,
+    )
     iters = iters + 1
 
     let cur_obj = tab[m][rhs_col]

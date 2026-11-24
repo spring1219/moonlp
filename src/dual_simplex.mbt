@@ -20,6 +20,8 @@ fn run_dual_simplex(
   let mut iters = 0
   let mut stall_count = 0
   let mut prev_obj = tab[m][rhs_col]
+  let nz_cols : Array[Int32] = []
+  let nz_vals : Array[Double] = []
 
   while iters < config.max_iters {
     let use_bland = stall_count >= config.bland_stall_limit
@@ -82,8 +84,10 @@ fn run_dual_simplex(
       return (Infeasible, iters)
     }
 
-    // 3. Pivot
-    pivot_tableau(tab, basis, m, rhs_col, leave_row, enter_col)
+    // 3. Pivot (zero-allocation sparse update)
+    pivot_tableau_buf(
+      tab, basis, m, rhs_col, leave_row, enter_col, nz_cols, nz_vals,
+    )
     iters = iters + 1
 
     let cur_obj = tab[m][rhs_col]
