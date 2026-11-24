@@ -258,33 +258,20 @@ pub fn solve_lp(
     if sol_s.status == Optimal && viol_s <= config.tol {
       return sol_s
     }
-    // Scaled LP either failed or violated config.tol (e.g. unscaling ULP drift):
-    // compare against unscaled LP and pick the cleaner verified solution!
+    // Scaled LP either failed or violated config.tol: check unscaled LP against config.tol
     let sol_u = solve_lp_unscaled(model, config)
     let viol_u = model.max_lp_violation(sol_u)
     if sol_u.status == Optimal && viol_u <= config.tol {
       return sol_u
     }
-    if sol_s.status == Optimal && sol_u.status == Optimal {
-      if viol_u < viol_s {
-        if viol_u <= 1.0e-4 {
-          return sol_u
-        }
-      } else if viol_s <= 1.0e-4 {
-        return sol_s
-      }
-      return Solution::empty(NumericalError, sol_s.iterations + sol_u.iterations, 1)
+    if sol_s.status == Optimal || sol_u.status == Optimal {
+      return Solution::empty(
+        NumericalError,
+        sol_s.iterations + sol_u.iterations,
+        1,
+      )
     }
-    if sol_u.status == Optimal && viol_u <= 1.0e-4 {
-      return sol_u
-    }
-    if sol_s.status == Optimal && viol_s <= 1.0e-4 {
-      return sol_s
-    }
-    if sol_s.status != Optimal {
-      return sol_s
-    }
-    return sol_u
+    return sol_s
   }
   let raw = solve_lp_unscaled(model, config)
   if raw.status == Optimal {
@@ -292,12 +279,10 @@ pub fn solve_lp(
     if viol_u > config.tol {
       let (sol_s, _) = solve_lp_relaxation_scaled(model, passes=6, config~)
       let viol_s = model.max_lp_violation(sol_s)
-      if sol_s.status == Optimal && viol_s < viol_u && viol_s <= 1.0e-4 {
+      if sol_s.status == Optimal && viol_s <= config.tol {
         return sol_s
       }
-      if viol_u > 1.0e-4 {
-        return Solution::empty(NumericalError, raw.iterations, 1)
-      }
+      return Solution::empty(NumericalError, raw.iterations + sol_s.iterations, 1)
     }
   }
   raw

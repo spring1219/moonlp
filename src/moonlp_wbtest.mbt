@@ -1992,13 +1992,16 @@ test "62. [v0.9 P0-3] LP preserves narrow [0, 5e-10] variable bounds instead of 
 }
 
 ///|
-test "63. [v0.9 P1-1] Decimal-parameter fixed-zero variant keeps LP residual <= tol & MILP Optimal" {
+test "63. [v0.9 P1-1] Decimal-parameter fixed-zero variant enforces consistent LP/MILP residual & status" {
   // Decimal parameter variant: a = 2e-9, max x - 1.05*a*y
   // s.t. x - y + z + 1e6*w <= 0.1, z - (1-a)*y = 0, 0 <= y <= 4.6e8, w = 0, x in {0, 1}
-  // Exact optimum: x = 1, y = 4.5e8, obj = 0.055.
+  // At x=1, y~4.5e8, IEEE-754 ULP of z=(1-a)*y causes 2.38e-8 residual (> default tol=1e-9):
+  // - Under default tol=1e-9: solve_lp must NOT return Optimal with 2.38e-8 violation (returns NumericalError),
+  //   and all 4 MILP solvers must return NumericalError (not NodeLimit!) with verified incumbent (0,0,0,0).
+  // - Under tol=1e-7: solve_lp and all 4 MILP solvers return Optimal 0.055 cleanly.
   let a = 2.0e-9
   let y_ub = 4.6e8
-  let cfg : SolverConfig = {
+  let strict_cfg : SolverConfig = {
     ..SolverConfig::default(),
     max_iters: 100,
     max_nodes: 24,
@@ -2031,25 +2034,48 @@ test "63. [v0.9 P1-1] Decimal-parameter fixed-zero variant keeps LP residual <= 
     [1.0, 0.0, 0.0, 0.0],
     [1.0, y_ub, 1.0e300, 1.0e300],
   )
-  let lp_x1 = solve_lp(m_x1, config=cfg)
-  assert_eq(lp_x1.status, Optimal)
-  assert_true(m_x1.verify_solution(lp_x1, tol=1.0e-9))
-  assert_approx(lp_x1.objective, 0.055, 1.0e-6)
+  // 1) Under strict tol=1e-9: consistent NumericalError across LP & all 4 MILP solvers (never NodeLimit!)
+  let lp_strict = solve_lp(m_x1, config=strict_cfg)
+  assert_eq(lp_strict.status, NumericalError)
 
-  let s1 = solve_milp(m, config=cfg)
+  let ms1 = solve_milp(m, config=strict_cfg)
+  assert_eq(ms1.status, NumericalError)
+  assert_true(ms1.nodes_explored < strict_cfg.max_nodes)
+  assert_eq(ms1.primal.length(), 4)
+  assert_approx(ms1.objective, 0.0, 1.0e-9)
+
+  let ms2 = solve_milp_warm(m, config=strict_cfg)
+  assert_eq(ms2.status, NumericalError)
+  assert_true(ms2.nodes_explored < strict_cfg.max_nodes)
+
+  let (ms3, _) = solve_milp_with_cuts(m, config=strict_cfg)
+  assert_eq(ms3.status, NumericalError)
+
+  let (ms4, _) = solve_milp_branch_and_cut(m, config=strict_cfg)
+  assert_eq(ms4.status, NumericalError)
+  assert_true(ms4.nodes_explored < strict_cfg.max_nodes)
+
+  // 2) Under tol=1e-7 (above IEEE-754 2.38e-8 ULP floor): Optimal 0.055 across LP & all 4 MILP solvers
+  let relaxed_cfg : SolverConfig = { ..strict_cfg, tol: 1.0e-7, }
+  let lp_ok = solve_lp(m_x1, config=relaxed_cfg)
+  assert_eq(lp_ok.status, Optimal)
+  assert_true(m_x1.verify_solution(lp_ok, tol=1.0e-7))
+  assert_approx(lp_ok.objective, 0.055, 1.0e-6)
+
+  let s1 = solve_milp(m, config=relaxed_cfg)
   assert_eq(s1.status, Optimal)
   assert_approx(s1.objective, 0.055, 1.0e-6)
 
-  let s2 = solve_milp_warm(m, config=cfg)
+  let s2 = solve_milp_warm(m, config=relaxed_cfg)
   assert_eq(s2.status, Optimal)
   assert_approx(s2.objective, 0.055, 1.0e-6)
 
-  let (s3, rep3) = solve_milp_with_cuts(m, config=cfg)
+  let (s3, rep3) = solve_milp_with_cuts(m, config=relaxed_cfg)
   assert_eq(s3.status, Optimal)
   assert_approx(s3.objective, 0.055, 1.0e-6)
   assert_true(rep3.cut_lp_obj >= 0.055 - 1.0e-6)
 
-  let (s4, stats4) = solve_milp_branch_and_cut(m, config=cfg)
+  let (s4, stats4) = solve_milp_branch_and_cut(m, config=relaxed_cfg)
   assert_eq(s4.status, Optimal)
   assert_approx(s4.objective, 0.055, 1.0e-6)
   assert_true(stats4.post_cut_lp_obj >= 0.055 - 1.0e-6)

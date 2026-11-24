@@ -494,7 +494,7 @@ pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
           buf.write_string(" FR BND1  ")
           buf.write_string(v.name)
           buf.write_string("\n")
-        } else if has_lb && has_ub && (v.ub - v.lb).abs() <= 1.0e-12 {
+        } else if has_lb && has_ub && v.lb == v.ub {
           buf.write_string(" FX BND1  ")
           buf.write_string(v.name)
           buf.write_string("  ")
