@@ -19,7 +19,7 @@ priv struct RemovedSingleton {
 }
 
 ///|
-fn presolve_with_map(
+fn Model::presolve_with_map(
   self : Model,
   tol : Double,
 ) -> (Model, PresolveReport, Array[Int32], Array[RemovedSingleton]) {
@@ -185,7 +185,7 @@ pub fn Model::presolve(
   self : Model,
   tol~ : Double = 1.0e-9,
 ) -> (Model, PresolveReport) {
-  let (reduced, report, _, _) = presolve_with_map(self, tol)
+  let (reduced, report, _, _) = self.presolve_with_map(tol)
   (reduced, report)
 }
 
@@ -196,8 +196,7 @@ pub fn Model::solve_presolved(
   self : Model,
   config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
-  let (reduced, report, kept_orig_indices, removed_singletons) = presolve_with_map(
-    self,
+  let (reduced, report, kept_orig_indices, removed_singletons) = self.presolve_with_map(
     config.tol,
   )
   if report.infeasible_detected {

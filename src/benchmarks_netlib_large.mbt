@@ -5,6 +5,7 @@
 /// Authentic Netlib ADLITTLE (56 constraints, 97 variables, 480 nonzeros).
 /// Canonical published Netlib optimal value: 225494.96316238.
 pub fn netlib_adlittle_mps() -> String {
+  let s =
   #|NAME          ADLITTLE SIZE: N=97, M=57, NZ=480
   #|ROWS
   #| N  .Z....
@@ -340,12 +341,14 @@ pub fn netlib_adlittle_mps() -> String {
   #|    ZZZZ0001  ....51           1080.   ....54         -1231.6
   #|    ZZZZ0001  ....56            107.
   #|ENDATA
+  s
 }
 
 ///|
 /// Authentic HiGHS SMALL_MIP benchmark featuring MPS RANGES section + INTORG/INTEND.
 /// Exact optimal value: 61.5 / 19.0 = 3.236842105263158.
 pub fn highs_small_mip_mps() -> String {
+  let s =
   #|NAME          EXAMPLE
   #|ROWS
   #| N  OBJ
@@ -384,12 +387,14 @@ pub fn highs_small_mip_mps() -> String {
   #| UP BND1      COL05              4.0
   #| UP BND1      COL08              4.3
   #|ENDATA
+  s
 }
 
 ///|
 /// Authentic MIPLIB 3.0 FLUGPL airline fleet scheduling MILP (18 rows, 18 cols, 11 general integers).
 /// Canonical LP relaxation = 1167185.73, canonical MILP optimum = 1201500.0.
 pub fn miplib_flugpl_mps() -> String {
+  let s =
   #|NAME          FLUGPL
   #|ROWS
   #| N  KOSTEN
@@ -487,4 +492,5 @@ pub fn miplib_flugpl_mps() -> String {
   #| UP BB        STM6                75
   #| UP BB        ANM6                18
   #|ENDATA
+  s
 }

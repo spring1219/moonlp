@@ -5,6 +5,7 @@
 /// Authentic Stanford SOL / Netlib AFIRO benchmark (28 rows, 32 cols, 88 nonzeros).
 /// Canonical published optimal objective value: -464.75314285714285.
 pub fn netlib_afiro_mps() -> String {
+  let s =
   #|NAME          AFIRO   SIZE: N=32, M=28, NZ=115
   #|ROWS
   #| E  R09
@@ -88,12 +89,14 @@ pub fn netlib_afiro_mps() -> String {
   #|    B         X27               500.   R23                44.
   #|    B         X40               500.
   #|ENDATA
+  s
 }
 
 ///|
 /// Authentic HiGHS AVGAS aviation gasoline LP benchmark (11 rows, 8 cols, 38 nonzeros).
 /// Canonical published optimal objective value: -7.75.
 pub fn highs_avgas_mps() -> String {
+  let s =
   #|NAME          AVGAS SIZE: N=8, M=11, NZ=38
   #|ROWS
   #| G  R1
@@ -145,6 +148,7 @@ pub fn highs_avgas_mps() -> String {
   #| UP SERVINGS  C7            1.0
   #| UP SERVINGS  C8            1.0
   #|ENDATA
+  s
 }
 
 ///|

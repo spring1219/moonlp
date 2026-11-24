@@ -511,7 +511,7 @@ fn parse_signed_number(
 pub fn parse_lp(text : String) -> Model raise ParseError {
   let lines = split_lines(text)
   let model = Model::new(Minimize)
-  let name_to_id : Map[String, VarId] = {}
+  let name_to_id : Map[String, VarId] = Map([])
   let mut section : LpSection = None
   let mut has_sense = false
   let mut auto_cname = 0

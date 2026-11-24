@@ -110,7 +110,7 @@ moonlp/
 │   ├── lp_format.mbt             # CPLEX .lp 双向解析器与导出器（含目标常数）
 │   ├── mps_format.mbt            # Netlib / MIPLIB .mps 双向解析器与导出器（含 OBJSENSE/FX/常数）
 │   ├── benchmarks.mbt            # 真实 Netlib AFIRO、HiGHS AVGAS 与 TSP-MTZ 算例集
-│   ├── benchmarks_v5.mbt         # 真实 Netlib ADLITTLE、HiGHS SMALL_MIP 与 MIPLIB FLUGPL
+│   ├── benchmarks_netlib_large.mbt # 真实 Netlib ADLITTLE、HiGHS SMALL_MIP 与 MIPLIB FLUGPL
 │   ├── moonlp_test.mbt           # 49 项全量单元测试与正确性回归集
 │   ├── moonlp_bench_wbtest.mbt   # 官方 moon bench --release 性能基准套件
 │   └── examples/main.mbt         # 6 合 1 CLI 演示（含 Netlib AFIRO 与 5 城 TSP-MTZ）

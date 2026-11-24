@@ -54,14 +54,14 @@ pub fn parse_mps(
   let model = Model::new(sense)
   let mut section : MpsSection = None
   let mut obj_row_name = ""
-  let row_name_to_idx : Map[String, Int32] = {}
+  let row_name_to_idx : Map[String, Int32] = Map([])
   let row_names : Array[String] = []
   let row_rels : Array[Relation] = []
   let row_terms : Array[Array[Term]] = []
   let row_rhs : Array[Double] = []
   let row_range : Array[Double?] = []
 
-  let var_name_to_id : Map[String, VarId] = {}
+  let var_name_to_id : Map[String, VarId] = Map([])
   let mut in_int_block = false
   let mut saw_rows = false
 
