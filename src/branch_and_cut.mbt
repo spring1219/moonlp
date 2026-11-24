@@ -509,6 +509,16 @@ pub fn solve_milp_branch_and_cut(
     }
     let scale = f0 / (1.0 - f0)
     let new_col = num_cols
+    let mut row_max_a = 0.0
+    for j = 0; j < new_col; j = j + 1 {
+      if col_active[j] && j != basis[best_r] {
+        let av = tab[best_r][j].abs()
+        if av > row_max_a {
+          row_max_a = av
+        }
+      }
+    }
+    let zero_noise = 1.0e-14 * (1.0 + row_max_a)
     let mut f0_eff = f0 - 1.0e-11
     let mut cut_has_coeff = false
     let mut cut_safe = true
@@ -520,12 +530,12 @@ pub fn solve_milp_branch_and_cut(
         continue
       }
       let a = tab[best_r][j]
-      if a == 0.0 {
+      if a.abs() <= zero_noise {
         continue
       }
       let gj = if is_int_col[j] {
         let fj = a - d_floor(a)
-        if fj <= 0.0 || fj >= 1.0 {
+        if fj <= 1.0e-14 || 1.0 - fj <= 1.0e-14 {
           0.0
         } else if fj <= f0 {
           fj
@@ -546,7 +556,7 @@ pub fn solve_milp_branch_and_cut(
         if gj < min_g {
           min_g = gj
         }
-      } else if gj > 0.0 {
+      } else if gj > 1.0e-14 {
         if j < col_ubs.length() && col_ubs[j] < inf_threshold {
           f0_eff = f0_eff - gj * col_ubs[j]
         } else {
