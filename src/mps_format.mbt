@@ -9,6 +9,7 @@ priv enum MpsSection {
   Rows
   Columns
   Rhs
+  Ranges
   Bounds
 }
 
@@ -57,6 +58,7 @@ pub fn parse_mps(
   let row_rels : Array[Relation] = []
   let row_terms : Array[Array[Term]] = []
   let row_rhs : Array[Double] = []
+  let row_range : Array[Double?] = []
 
   let var_name_to_id : Map[String, VarId] = {}
   let mut in_int_block = false
@@ -87,6 +89,10 @@ pub fn parse_mps(
     }
     if head == "rhs" {
       section = Rhs
+      continue
+    }
+    if head == "ranges" {
+      section = Ranges
       continue
     }
     if head == "bounds" {
@@ -128,6 +134,7 @@ pub fn parse_mps(
           row_rels.push(rel)
           row_terms.push([])
           row_rhs.push(0.0)
+          row_range.push(None)
         }
       }
       Columns => {
@@ -192,6 +199,25 @@ pub fn parse_mps(
           p = p + 2
         }
       }
+      Ranges => {
+        if fields.length() < 3 {
+          raise ParseError("Invalid MPS RANGES entry: " + raw)
+        }
+        let mut p = 1
+        while p + 1 < fields.length() {
+          let rname = fields[p]
+          let val = match try_parse_double(fields[p + 1]) {
+            Some(v) => v
+            None =>
+              raise ParseError("Invalid MPS RANGES number: " + fields[p + 1])
+          }
+          match row_name_to_idx.get(rname) {
+            Some(ridx) => row_range[ridx] = Some(val)
+            None => ()
+          }
+          p = p + 2
+        }
+      }
       Bounds => {
         if fields.length() < 3 {
           raise ParseError("Invalid MPS BOUNDS entry: " + raw)
@@ -246,7 +272,53 @@ pub fn parse_mps(
   }
 
   for i = 0; i < row_names.length(); i = i + 1 {
-    model.add_constraint(row_names[i], row_terms[i], row_rels[i], row_rhs[i])
+    match row_range[i] {
+      None =>
+        model.add_constraint(row_names[i], row_terms[i], row_rels[i], row_rhs[i])
+      Some(rval) => {
+        let abs_r = rval.abs()
+        match row_rels[i] {
+          Ge => {
+            // b <= a^T x <= b + |r|
+            model.add_constraint(row_names[i], row_terms[i], Ge, row_rhs[i])
+            model.add_constraint(
+              row_names[i] + "_ub",
+              row_terms[i],
+              Le,
+              row_rhs[i] + abs_r,
+            )
+          }
+          Le => {
+            // b - |r| <= a^T x <= b
+            model.add_constraint(row_names[i], row_terms[i], Le, row_rhs[i])
+            model.add_constraint(
+              row_names[i] + "_lb",
+              row_terms[i],
+              Ge,
+              row_rhs[i] - abs_r,
+            )
+          }
+          Eq =>
+            if rval >= 0.0 {
+              model.add_constraint(row_names[i], row_terms[i], Ge, row_rhs[i])
+              model.add_constraint(
+                row_names[i] + "_ub",
+                row_terms[i],
+                Le,
+                row_rhs[i] + rval,
+              )
+            } else {
+              model.add_constraint(
+                row_names[i] + "_lb",
+                row_terms[i],
+                Ge,
+                row_rhs[i] + rval,
+              )
+              model.add_constraint(row_names[i], row_terms[i], Le, row_rhs[i])
+            }
+        }
+      }
+    }
   }
   model
 }
