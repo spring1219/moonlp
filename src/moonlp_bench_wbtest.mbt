@@ -94,3 +94,27 @@ test "bench Soft-Margin SVM Dual QP (8x8 rank-2 PSD)" (b : @bench.T) {
   let m = build_svm_dual_qp(c_reg=10.0)
   b.bench(fn() { b.keep(solve_qp(m).objective) })
 }
+
+///|
+test "bench Thermal Unit Commitment MIQP (5 generators, quad fuel cost)" (
+  b : @bench.T,
+) {
+  let m = build_unit_commitment_miqp(demand=140.0, reserve=20.0)
+  b.bench(fn() { b.keep(solve_miqp(m).objective) })
+}
+
+///|
+test "bench L0 Best-Subset Ridge Regression MIQP (2 of 5 features)" (
+  b : @bench.T,
+) {
+  let m = build_best_subset_ridge_miqp(max_features=2, ridge_lambda=0.05)
+  b.bench(fn() { b.keep(solve_miqp(m).objective) })
+}
+
+///|
+test "bench Hybrid Switched-Thruster Deadzone MPC MIQP (5-step, <=3 firings)" (
+  b : @bench.T,
+) {
+  let m = build_hybrid_mpc_miqp(horizon=5, max_firings=3)
+  b.bench(fn() { b.keep(solve_miqp(m).objective) })
+}

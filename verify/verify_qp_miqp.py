@@ -151,9 +151,116 @@ def verify_svm_dual_qp():
     check("Soft-Margin SVM Dual QP (rank-2 PSD)", res.fun, -0.09289363677146076, tol=1e-7)
 
 
+def verify_unit_commitment_miqp():
+    p_min = np.array([30.0, 20.0, 15.0, 10.0, 5.0])
+    p_max = np.array([80.0, 60.0, 50.0, 40.0, 30.0])
+    a = np.array([0.008, 0.012, 0.018, 0.025, 0.032])
+    b = np.array([18.0, 22.0, 26.0, 31.0, 35.0])
+    c = np.array([220.0, 140.0, 90.0, 55.0, 35.0])
+    best = float("inf")
+    best_u = None
+    for mask in range(1, 32):
+        idx = [g for g in range(5) if (mask >> g) & 1]
+        if np.sum(p_max[idx]) < 160.0 or np.sum(p_min[idx]) > 140.0:
+            continue
+        k = len(idx)
+        ai, bi, ci = a[idx], b[idx], float(np.sum(c[idx]))
+        res = minimize(
+            lambda p: float(np.sum(ai * p * p + bi * p)) + ci,
+            p_min[idx],
+            jac=lambda p: 2.0 * ai * p + bi,
+            bounds=[(float(p_min[g]), float(p_max[g])) for g in idx],
+            constraints=[{"type": "eq", "fun": lambda p: np.sum(p) - 140.0, "jac": lambda p: np.ones(k)}],
+            method="SLSQP",
+            options={"ftol": 1e-14, "maxiter": 500},
+        )
+        if res.success and abs(np.sum(res.x) - 140.0) < 1e-6 and res.fun < best:
+            best = res.fun
+            best_u = (idx, res.x)
+    print(f"    Exact UC-MIQP units = {[(i, round(float(v), 4)) for i, v in zip(best_u[0], best_u[1])]}")
+    check("Thermal Unit Commitment MIQP (140MW+20MW)", best, 3308.3000000000166, tol=1e-5)
+
+
+def verify_best_subset_ridge_miqp():
+    X = np.array([
+        [1.0, 0.8, -0.3, 0.5, 0.4],
+        [2.0, 1.5, 0.4, -1.0, -0.2],
+        [-1.5, -1.1, 0.9, 1.2, 0.7],
+        [0.5, 0.6, -1.2, 2.0, -0.5],
+        [-2.0, -1.7, 0.2, -1.5, 0.9],
+        [1.8, 1.2, 1.1, 0.8, -0.8],
+        [-0.7, -0.4, -0.8, 1.7, 0.3],
+        [1.2, 1.1, 0.5, -2.2, -0.6],
+    ])
+    y = np.array([1.62, 6.78, -5.88, -2.37, -2.31, 3.09, -4.83, 6.95])
+    lam = 0.05
+    best = float("inf")
+    best_comb = None
+    for k in range(1, 3):
+        for comb in itertools.combinations(range(5), k):
+            idx = list(comb)
+            Xs = X[:, idx]
+            beta = np.linalg.solve(Xs.T @ Xs + lam * np.eye(k), Xs.T @ y)
+            loss = 0.5 * float(np.sum((Xs @ beta - y) ** 2)) + 0.5 * lam * float(np.sum(beta ** 2))
+            if loss < best:
+                best = loss
+                best_comb = (idx, beta)
+    print(f"    Exact Best-Subset Ridge support = {best_comb[0]}, beta = {[round(float(v), 6) for v in best_comb[1]]}")
+    check("L0 Best-Subset Ridge Regression MIQP (K<=2)", best, 0.23809506861601154, tol=1e-7)
+
+
+def verify_hybrid_mpc_miqp():
+    N = 5
+    dt = 0.5
+    h2 = 0.125
+    best = float("inf")
+    best_seq = None
+    for mask in range(32):
+        z = [(mask >> t) & 1 for t in range(N)]
+        if sum(z) > 3:
+            continue
+        def eval_cost(u_act, active_idx, z_vec):
+            u = np.zeros(N)
+            for k, t in enumerate(active_idx):
+                u[t] = u_act[k]
+            p, v = 2.0, 0.0
+            cost = 0.2 * sum(z_vec) + 0.25 * float(np.sum(u * u))
+            for t in range(N):
+                p = p + dt * v - h2 * u[t]
+                v = v - dt * u[t]
+                if abs(v) > 2.0 + 1e-7:
+                    return 1e12
+                qp = 20.0 if t == N - 1 else 10.0
+                qv = 4.0 if t == N - 1 else 2.0
+                cost += 0.5 * (qp * p * p + qv * v * v)
+            return cost
+        active = [t for t in range(N) if z[t] == 1]
+        if not active:
+            val = eval_cost(np.array([]), [], z)
+            if val < best:
+                best = val
+                best_seq = (z, [])
+        else:
+            res = minimize(
+                lambda ua: eval_cost(ua, active, z),
+                np.full(len(active), 0.6),
+                bounds=[(0.3, 1.0)] * len(active),
+                method="SLSQP",
+                options={"ftol": 1e-14, "maxiter": 500},
+            )
+            if res.success and res.fun < best:
+                best = res.fun
+                best_seq = (z, [round(float(v), 4) for v in res.x])
+    print(f"    Exact Hybrid MPC firing = z={best_seq[0]}, u={best_seq[1]}")
+    check("Hybrid Switched-Thruster Deadzone MPC MIQP", best, 41.2281250000146, tol=1e-5)
+
+
 if __name__ == "__main__":
     verify_markowitz_qp()
     verify_cardinality_miqp()
     verify_linear_mpc_qp()
     verify_svm_dual_qp()
-    print("\nALL 4 QP/MIQP MODELS VERIFIED TO <= 1e-6 AGAINST SCIPY + EXACT COMBINATORIAL ENUMERATION!")
+    verify_unit_commitment_miqp()
+    verify_best_subset_ridge_miqp()
+    verify_hybrid_mpc_miqp()
+    print("\nALL 7 QP/MIQP MODELS VERIFIED AGAINST SCIPY + EXACT COMBINATORIAL ENUMERATION!")

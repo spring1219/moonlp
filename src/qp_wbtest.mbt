@@ -301,3 +301,81 @@ test "73. [v1.0 MIQP] Pure-integer quadratic assignment / discrete target tracki
   assert_approx(sol.objective, 0.65, 1.0e-7)
   assert_true(m.verify_solution(sol, tol=1.0e-7))
 }
+
+///|
+test "74. [v1.0 MIQP Model] Thermal Unit Commitment & Quadratic Economic Dispatch" {
+  let m = build_unit_commitment_miqp(demand=140.0, reserve=20.0)
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol, tol=1.0e-5))
+  assert_true(sol.mip_gap <= 1.0e-5)
+
+  let p_min = [30.0, 20.0, 15.0, 10.0, 5.0]
+  let p_max = [80.0, 60.0, 50.0, 40.0, 30.0]
+  let mut total_gen = 0.0
+  let mut total_cap = 0.0
+  for g = 0; g < 5; g = g + 1 {
+    let pg = sol.primal[g]
+    let ug = sol.primal[5 + g]
+    total_gen = total_gen + pg
+    if ug > 0.5 {
+      total_cap = total_cap + p_max[g]
+      assert_true(pg >= p_min[g] - 1.0e-5 && pg <= p_max[g] + 1.0e-5)
+    } else {
+      assert_true(pg.abs() <= 1.0e-5)
+    }
+  }
+  assert_approx(total_gen, 140.0, 1.0e-5)
+  assert_true(total_cap >= 160.0 - 1.0e-5)
+}
+
+///|
+test "75. [v1.0 MIQP Model] L0 Best-Subset Sparse Ridge Regression recovers exact support {0, 3}" {
+  let m = build_best_subset_ridge_miqp(max_features=2, ridge_lambda=0.05)
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol, tol=1.0e-5))
+  assert_true(sol.mip_gap <= 1.0e-5)
+
+  // Must select exact true features {0, 3} with beta_0 ~ 2.5, beta_3 ~ -1.8, and zero others
+  assert_true(sol.primal[5] > 0.5)
+  assert_true(sol.primal[6] < 0.5)
+  assert_true(sol.primal[7] < 0.5)
+  assert_true(sol.primal[8] > 0.5)
+  assert_true(sol.primal[9] < 0.5)
+  assert_approx(sol.primal[0], 2.5, 0.05)
+  assert_approx(sol.primal[3], -1.8, 0.05)
+  assert_true(sol.primal[1].abs() <= 1.0e-6)
+  assert_true(sol.primal[2].abs() <= 1.0e-6)
+  assert_true(sol.primal[4].abs() <= 1.0e-6)
+}
+
+///|
+test "76. [v1.0 MIQP Model] Hybrid Switched-Thruster Deadzone MPC (max 3 firings in 5 steps)" {
+  let m = build_hybrid_mpc_miqp(
+    horizon=5,
+    max_firings=3,
+    x0_pos=2.0,
+    x0_vel=0.0,
+    u_min=0.3,
+    u_max=1.0,
+  )
+  let sol = m.solve()
+  assert_eq(sol.status, Optimal)
+  assert_true(m.verify_solution(sol, tol=1.0e-5))
+  assert_true(sol.mip_gap <= 1.0e-5)
+
+  // Verify deadzone u_t in {0} U [0.3, 1.0] and firing budget sum(z_t) <= 3
+  let mut firings = 0
+  for t = 0; t < 5; t = t + 1 {
+    let ut = sol.primal[10 + t]
+    let zt = sol.primal[15 + t]
+    if zt > 0.5 {
+      firings = firings + 1
+      assert_true(ut >= 0.3 - 1.0e-5 && ut <= 1.0 + 1.0e-5)
+    } else {
+      assert_true(ut.abs() <= 1.0e-5)
+    }
+  }
+  assert_true(firings <= 3 && firings >= 1)
+}

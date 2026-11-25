@@ -267,4 +267,72 @@ fn main {
   println(
     "     Dual Objective = \{svm_sol.objective} | Support Vectors = \{sv_count} | IPM iters=\{svm_sol.iterations} | KKT=\{svm_cert.certified_optimal}",
   )
+
+  // 11. Thermal Unit Commitment & Quadratic Economic Dispatch (MIQP)
+  let uc = @moonlp.build_unit_commitment_miqp(demand=140.0, reserve=20.0)
+  let uc_sol = uc.solve()
+  let uc_names = ["Coal_Base", "CCGT_Mid", "Gas_Flex", "Peaker_1", "Peaker_2"]
+  let uc_on = StringBuilder()
+  for g = 0; g < 5; g = g + 1 {
+    if uc_sol.primal[5 + g] > 0.5 {
+      if uc_on.to_string().length() > 0 {
+        uc_on.write_string(", ")
+      }
+      uc_on.write_string(uc_names[g])
+      uc_on.write_string("=")
+      uc_on.write_string(uc_sol.primal[g].to_string())
+      uc_on.write_string("MW")
+    }
+  }
+  println(
+    "\n[11] Thermal Unit Commitment & Quadratic Economic Dispatch (MIQP, 140MW + 20MW reserve)",
+  )
+  println(
+    "     Min Total Cost = \{uc_sol.objective} | B&B nodes=\{uc_sol.nodes_explored} | mip_gap=\{uc_sol.mip_gap}",
+  )
+  println("     Committed Units = [\{uc_on.to_string()}]")
+
+  // 12. L0 Best-Subset Sparse Ridge Regression (MIQP)
+  let bsr = @moonlp.build_best_subset_ridge_miqp(
+    max_features=2,
+    ridge_lambda=0.05,
+  )
+  let bsr_sol = bsr.solve()
+  println(
+    "\n[12] L0 Best-Subset Sparse Ridge Regression (MIQP, max 2 of 5 features)",
+  )
+  println(
+    "     Min Regularized Loss = \{bsr_sol.objective} | B&B nodes=\{bsr_sol.nodes_explored} | beta_0=\{bsr_sol.primal[0]}, beta_3=\{bsr_sol.primal[3]}",
+  )
+
+  // 13. Hybrid Switched-Thruster Deadzone MPC (MIQP-MPC)
+  let hmpc = @moonlp.build_hybrid_mpc_miqp(
+    horizon=5,
+    max_firings=3,
+    x0_pos=2.0,
+    x0_vel=0.0,
+    u_min=0.3,
+    u_max=1.0,
+  )
+  let hmpc_sol = hmpc.solve()
+  let fire_str = StringBuilder()
+  for t = 0; t < 5; t = t + 1 {
+    if t > 0 {
+      fire_str.write_string(", ")
+    }
+    fire_str.write_string("t\{t}:")
+    fire_str.write_string(
+      if hmpc_sol.primal[15 + t] > 0.5 {
+        hmpc_sol.primal[10 + t].to_string()
+      } else {
+        "OFF"
+      },
+    )
+  }
+  println(
+    "\n[13] Hybrid Switched-Thruster Deadzone MPC (MIQP-MPC, u in {0} U [0.3, 1.0], <= 3 firings)",
+  )
+  println(
+    "     Min Hybrid Cost = \{hmpc_sol.objective} | B&B nodes=\{hmpc_sol.nodes_explored} | Thruster = [\{fire_str.to_string()}]",
+  )
 }

@@ -6,9 +6,13 @@ import {
 }
 
 // Values
+pub fn build_best_subset_ridge_miqp(max_features? : Int32, ridge_lambda? : Double, big_m? : Double) -> Model
+
 pub fn build_cardinality_portfolio_miqp(max_assets? : Int32, min_weight? : Double, max_weight? : Double, target_return? : Double) -> Model
 
 pub fn build_constrained_lsq_qp() -> Model
+
+pub fn build_hybrid_mpc_miqp(horizon? : Int32, max_firings? : Int32, x0_pos? : Double, x0_vel? : Double, u_min? : Double, u_max? : Double) -> Model
 
 pub fn build_linear_mpc_qp(horizon? : Int32, x0_pos? : Double, x0_vel? : Double, u_max? : Double, v_max? : Double) -> Model
 
@@ -17,6 +21,8 @@ pub fn build_markowitz_portfolio_qp(target_return? : Double, max_weight? : Doubl
 pub fn build_svm_dual_qp(c_reg? : Double) -> Model
 
 pub fn build_tsp5_mtz_model() -> Model
+
+pub fn build_unit_commitment_miqp(demand? : Double, reserve? : Double) -> Model
 
 pub fn highs_avgas_mps() -> String
 
