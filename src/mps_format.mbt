@@ -12,6 +12,8 @@ priv enum MpsSection {
   Rhs
   Ranges
   Bounds
+  QuadObj
+  QMatrix
 }
 
 ///|
@@ -76,31 +78,40 @@ pub fn parse_mps(
     }
     let head = to_lower_ascii(fields[0])
 
-    if head == "name" {
+    // Free-format data may start in column one and use a keyword as its name.
+    if !saw_rows && head == "name" {
       continue
     }
-    if head == "rows" {
+    if fields.length() == 1 && head == "rows" {
       section = Rows
       saw_rows = true
       continue
     }
-    if head == "columns" {
+    if fields.length() == 1 && head == "columns" {
       section = Columns
       continue
     }
-    if head == "rhs" {
+    if fields.length() == 1 && head == "rhs" {
       section = Rhs
       continue
     }
-    if head == "ranges" {
+    if fields.length() == 1 && head == "ranges" {
       section = Ranges
       continue
     }
-    if head == "bounds" {
+    if fields.length() == 1 && head == "bounds" {
       section = Bounds
       continue
     }
-    if head == "objsense" {
+    if fields.length() == 1 && (head == "quadobj" || head == "qsection") {
+      section = QuadObj
+      continue
+    }
+    if fields.length() == 1 && head == "qmatrix" {
+      section = QMatrix
+      continue
+    }
+    if fields.length() <= 2 && head == "objsense" {
       if fields.length() >= 2 {
         let s = to_lower_ascii(fields[1])
         if s == "max" || s == "maximize" {
@@ -113,7 +124,7 @@ pub fn parse_mps(
       }
       continue
     }
-    if head == "endata" {
+    if fields.length() == 1 && head == "endata" {
       break
     }
 
@@ -286,6 +297,48 @@ pub fn parse_mps(
           } else {
             raise ParseError("Unknown MPS bound type: " + fields[0])
           }
+        }
+      }
+      QuadObj | QMatrix => {
+        if fields.length() < 3 {
+          raise ParseError("Invalid MPS QUADOBJ/QMATRIX entry: " + raw)
+        }
+        let v1_name = fields[0]
+        let v2_name = fields[1]
+        let qval = match try_parse_double(fields[2]) {
+          Some(v) => v
+          None => raise ParseError("Invalid MPS quadratic value: " + fields[2])
+        }
+        let v1 = match var_name_to_id.get(v1_name) {
+          Some(id) => id
+          None => {
+            let id = model.add_continuous_var(v1_name)
+            var_name_to_id.set(v1_name, id)
+            id
+          }
+        }
+        let v2 = match var_name_to_id.get(v2_name) {
+          Some(id) => id
+          None => {
+            let id = model.add_continuous_var(v2_name)
+            var_name_to_id.set(v2_name, id)
+            id
+          }
+        }
+        match section {
+          QuadObj =>
+            // Single-triangle QUADOBJ stores symmetric Q in 0.5 * x^T Q x:
+            // diagonal (i == j) contributes 0.5 * qval * x_i^2,
+            // off-diagonal (i != j) contributes qval * x_i * x_j.
+            if v1.index == v2.index {
+              model.add_quad_obj_term(v1, v2, 0.5 * qval)
+            } else {
+              model.add_quad_obj_term(v1, v2, qval)
+            }
+          QMatrix =>
+            // Full-symmetric QMATRIX lists both (i,j) and (j,i), each contributing 0.5 * qval.
+            model.add_quad_obj_term(v1, v2, 0.5 * qval)
+          _ => ()
         }
       }
     }
@@ -520,6 +573,25 @@ pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
             buf.write_string("\n")
           }
         }
+    }
+  }
+
+  if self.has_quad_obj() {
+    buf.write_string("QUADOBJ\n")
+    let q = self.build_symmetric_hessian()
+    let n = self.vars.length()
+    for i = 0; i < n; i = i + 1 {
+      for j = i; j < n; j = j + 1 {
+        if q[i][j] != 0.0 {
+          buf.write_string("    ")
+          buf.write_string(self.vars[i].name)
+          buf.write_string("  ")
+          buf.write_string(self.vars[j].name)
+          buf.write_string("  ")
+          buf.write_string(q[i][j].to_string())
+          buf.write_string("\n")
+        }
+      }
     }
   }
 

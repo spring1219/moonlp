@@ -61,7 +61,7 @@ fn run_dual_simplex(
       if a_lj < -pivot_tol {
         let rc = if obj_row[j] < 0.0 { 0.0 } else { obj_row[j] }
         let ratio = rc / -a_lj
-        let tie_tol = 1.0e-12 * (1.0 + best_ratio.abs())
+        let tie_tol = 1.0e-12 * best_ratio.abs()
         if enter_col == -1 || ratio < best_ratio - tie_tol {
           best_ratio = ratio
           best_pivot = -a_lj
@@ -128,7 +128,7 @@ pub fn solve_lp_dual(
     if v.lb < -inf_threshold || v.ub < inf_threshold {
       return solve_lp(model, config~)
     }
-    if v.obj * sense_sign < -simplex_price_tol(config) {
+    if v.obj * sense_sign < 0.0 {
       return solve_lp(model, config~)
     }
   }
@@ -138,7 +138,7 @@ pub fn solve_lp_dual(
       Le | Ge => ()
     }
   }
-  if m_user == 0 {
+  if m_user == 0 || needs_auto_scaling(model) {
     return solve_lp(model, config~)
   }
 
@@ -213,11 +213,11 @@ pub fn solve_lp_dual(
   for i = 0; i < m_user; i = i + 1 {
     let y_std = -tab[m_user][n_orig + i]
     let y_user = y_std * row_signs[i] * sense_sign
-    dual.push(if y_user.abs() < 1.0e-15 { 0.0 } else { y_user })
+    dual.push(y_user)
   }
 
   let final_obj = (-tab[m_user][rhs_col] + obj_offset) * sense_sign
-  {
+  let result : Solution = {
     status: Optimal,
     objective: final_obj,
     primal,
@@ -227,4 +227,5 @@ pub fn solve_lp_dual(
     nodes_explored: 1,
     mip_gap: 0.0,
   }
+  clean_dual_roundoff(model, result, config)
 }

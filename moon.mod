@@ -1,6 +1,6 @@
 name = "spring1219/moonlp"
 
-version = "0.9.0"
+version = "1.0.0"
 
 readme = "README.md"
 
@@ -9,18 +9,20 @@ repository = "https://github.com/spring1219/moonlp"
 license = "Apache-2.0"
 
 keywords = [
+  "quadratic-programming",
+  "miqp",
+  "interior-point",
   "linear-programming",
-  "simplex",
-  "dual-simplex",
-  "gomory-cuts",
   "milp",
+  "simplex",
+  "gomory-cuts",
   "optimization",
-  "operations-research",
-  "solver",
+  "mpc",
+  "portfolio-optimization",
+  "qps",
   "mps",
-  "cplex-lp",
 ]
 
-description = "Pure MoonBit Linear & Mixed-Integer Linear Programming (LP/MILP) Solver: Two-Phase Primal & Dual Simplex, Bland Anti-Cycling, Gomory Mixed-Integer (GMI) Cutting Planes, Branch-and-Bound, Presolve, KKT Strong Duality Certificates, Sensitivity Analysis, and CPLEX .lp / Netlib .mps Parsers."
+description = "Pure MoonBit Convex Quadratic (QP), Mixed-Integer Quadratic (MIQP), and LP/MILP Optimization Solver: Scale-Normalized Mehrotra Primal-Dual Interior-Point Method, MIQP Branch-and-Bound, Quadratic KKT & Wolfe Strong Duality Certification, Two-Phase & Dual Simplex, GMI Cuts, and CPLEX .lp / .qps (QUADOBJ) Parsers."
 
 source = "src"

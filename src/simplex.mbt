@@ -126,6 +126,27 @@ fn drive_out_artificials(
 }
 
 ///|
+/// Recompute a reduced cost and the sum of absolute terms for its rounding scale.
+fn reprice_column(
+  tab : Array[Array[Double]],
+  basis : Array[Int32],
+  c : Array[Double],
+  j : Int32,
+) -> (Double, Double) {
+  let mut price = if j < c.length() { c[j] } else { 0.0 }
+  let mut scale = price.abs()
+  for i = 0; i < basis.length(); i = i + 1 {
+    let b = basis[i]
+    if b < c.length() {
+      let contribution = c[b] * tab[i][j]
+      price = price - contribution
+      scale = scale + contribution.abs()
+    }
+  }
+  (price, scale)
+}
+
+///|
 /// Run simplex iterations on the current tableau objective row `m`.
 /// Returns (status, iterations_used).
 fn run_simplex_phase(
@@ -135,6 +156,7 @@ fn run_simplex_phase(
   m : Int32,
   num_cols : Int32,
   config : SolverConfig,
+  costs? : Array[Double],
 ) -> (Status, Int32) {
   let rhs_col = num_cols
   let mut iters = 0
@@ -150,13 +172,24 @@ fn run_simplex_phase(
 
     // 1. Choose entering column
     let mut enter_col = -1
-    let mut best_rc = -price_tol
+    let mut best_rc = 0.0
     for j = 0; j < num_cols; j = j + 1 {
       if !col_active[j] {
         continue
       }
-      let rc = obj_row[j]
-      if rc < -price_tol {
+      let mut rc = obj_row[j]
+      if rc < 0.0 && rc >= -price_tol {
+        // A small absolute price can buy a large improvement on a long edge.
+        // Reprice ambiguous columns from c_j - c_B^T B^-1 A_j, allowing
+        // roundoff relative only to the terms that contribute to this column.
+        guard costs is Some(c) else { continue }
+        let (price, scale) = reprice_column(tab, basis, c, j)
+        if price >= -price_tol * scale {
+          continue
+        }
+        rc = price
+      }
+      if rc < 0.0 {
         if use_bland {
           enter_col = j
           break
@@ -392,9 +425,8 @@ fn solve_lp_unscaled(
 
   // Handle unconstrained trivial case (0 rows)
   if m_total == 0 {
-    let price_tol = simplex_price_tol(config)
     for j = 0; j < n_std; j = j + 1 {
-      if std_obj[j] < -price_tol {
+      if std_obj[j] < 0.0 {
         return Solution::empty(Unbounded, 0, 1)
       }
     }
@@ -627,7 +659,7 @@ fn solve_lp_unscaled(
   }
 
   let (p2_status, p2_iters) = run_simplex_phase(
-    tab, basis, col_active, m_total, num_cols, config,
+    tab, basis, col_active, m_total, num_cols, config, costs=std_obj,
   )
   total_iters = total_iters + p2_iters
   if p2_status != Optimal {
@@ -673,13 +705,13 @@ fn solve_lp_unscaled(
     let ucol = init_unit_col[i]
     let y_std = -tab[m_total][ucol]
     let y_user = y_std * row_signs[i] * sense_sign
-    dual.push(if y_user.abs() < 1.0e-15 { 0.0 } else { y_user })
+    dual.push(y_user)
   }
 
   let min_obj = -tab[m_total][rhs_col] + obj_offset
   let final_obj = min_obj * sense_sign
 
-  {
+  let result : Solution = {
     status: Optimal,
     objective: final_obj,
     primal,
@@ -689,4 +721,5 @@ fn solve_lp_unscaled(
     nodes_explored: 1,
     mip_gap: 0.0,
   }
+  clean_dual_roundoff(model, result, config)
 }

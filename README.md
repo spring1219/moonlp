@@ -1,92 +1,111 @@
-# `moonlp` — Pure MoonBit LP & MILP Optimization Solver
+# `moonlp` — Pure MoonBit Convex QP / MIQP & LP / MILP Optimization Solver
 
 [![MoonBit CI](https://github.com/spring1219/moonlp/actions/workflows/ci.yml/badge.svg)](https://github.com/spring1219/moonlp/actions/workflows/ci.yml)
 ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Backends: wasm-gc | js | native](https://img.shields.io/badge/targets-wasm--gc%20%7C%20js%20%7C%20native-brightgreen.svg)
 
-> **零外部依赖、全后端（`wasm-gc` / `js` / `native`）通用的纯 MoonBit 线性规划（LP）与混合整数线性规划（MILP）求解器与建模库**  
-> 已通过真实国际标准 **Netlib `ADLITTLE`（56×97）**、**Netlib `AFIRO`（28×32）**、**HiGHS `AVGAS`/`SMALL_MIP`**、**MIPLIB 3.0 `FLUGPL`** 及 **63 项** `--deny-warn` 全后端正确性/回归测试与 `moon bench --release` 验证。
+> **零外部依赖、全后端（`wasm-gc` / `js` / `native`）通用的纯 MoonBit 凸二次规划（QP）、混合整数二次规划（MIQP）及线性/混合整数线性规划（LP/MILP）求解与证明库**  
+> 在兼容标准 LP/MILP 与 `.mps`/`.lp` 的基础上，补齐 MoonBit 生态在 **凸二次规划（Primal-Dual 内点法）**、**混合整数二次规划（MIQP B&B）**、**二次 KKT / Wolfe 强对偶认证** 与 **`.qps` (`QUADOBJ`) / CPLEX 二次 `.lp`** 上的能力空白。
 
 ---
 
-## 核心特性（v0.9.0 · 正确性终验版 · 三后端 `--deny-warn` 全绿）
+## 与生态已有 `Freon793/moonopt` 的定位分工与实质差异
 
-- **类型安全的代数建模 DSL 与严格校验** (`src/types.mbt`, `src/model.mbt`)
-  - 支持 `Minimize` / `Maximize`、连续 (`Continuous`)、一般整数 (`Integer`)、0-1 二值 (`Binary`) 变量、任意上下界与自由变量；内置拒绝 `NaN`/`±Inf` 的独立可行性校验器 `Model::verify_solution`。
-- **稀疏感知原始单纯形 + 对偶单纯形 + 自动 Ruiz 平衡缩放** (`src/simplex.mbt`, `src/dual_simplex.mbt`, `src/scaling.mbt`)
-  - **自动 Ruiz 迭代 $L_\infty$ 平衡缩放 (`solve_lp` / `solve_scaled` / `ruiz_scale`)**：当系数跨度超界时默认求解路径自动触发 Ruiz 平衡缩放与原尺度复核，稳健求解 $10^{-10} x \le 1$ 等极端尺度 LP，并精确反缩放原始解、对偶影子价格与检验数。
-  - **稀疏感知 Gauss-Jordan 旋转 + $10^{-12}$ 紧凑最小比率测试 + Harris/Bland 防循环**：将主元阈值与比率平局容差独立解耦，避免大尺度差异下的错误出基行。
-  - **Dual Simplex (`solve_lp_dual` / `run_dual_simplex`)**：零 Phase I 直接求解对偶可行 LP，并驱动割平面与分支定界子节点热启动。
-- **统一状态语义的 Branch-and-Cut 与四大 MILP 引擎** (`src/branch_and_cut.mbt`, `src/warm_bb.mbt`, `src/cuts.mbt`, `src/milp.mbt`)
-  - **`solve_milp_branch_and_cut`（旗舰统一引擎）**：融合根节点 **GMI 混合整数割平面** + **混合 DFS 潜行/Best-Bound 搜索** + **继承割平面的 Dual Simplex 热启动分支** + **目标加权分支** + **原始舍入启发式（Primal Rounding Heuristic）**。
-  - **严格状态传播与整数候选验收（v0.6.0 加固）**：四大 MILP 入口统一区分 `Optimal` / `Infeasible` / `Unbounded` / `InfeasibleOrUnbounded` / `MaxIterations` / `NodeLimit`——不再将迭代耗尽误判为不可行；利用零目标整数可行性模型（Meyer 定理）区分"LP 松弛无界但整数不可行"与"真正无界"；取整候选统一在原模型上验证/修复连续变量，大系数次容差分数解自动回退细分分支。
-- **Presolve 双向对偶恢复、完整 KKT 最优性证书与灵敏度分析** (`src/presolve.mbt`, `src/certificate.mbt`, `src/sensitivity.mbt`)
-  - **Presolve + Postsolve (`solve_presolved`)**：单变量约束界收紧与冗余行消除后，自动将保留约束与被消除单变量紧约束的对偶影子价格完整映射回原模型空间。
-  - **严格 KKT 最优性证明器 (`certify_lp_solution`)**：完整检查有限性、原始可行性、对偶符号可行性、约束互补松弛、含有限上下界乘子的 KKT 驻点与完整强对偶间隙（彻底杜绝次优点误签）。
-- **双工业标准格式无损往返** (`src/lp_format.mbt`, `src/mps_format.mbt`)
-  - **CPLEX `.lp`**：`parse_lp` + `to_lp_string`（完整保留目标常数项 `obj_constant`）。
-  - **Netlib / MIPLIB `.mps`**：`parse_mps` + `to_mps_string`（完整支持 `OBJSENSE MIN/MAX`、`RHS` 目标常数偏置、固定二值变量 `BV`+`FX` 导出、`N/L/G/E` 行、`RANGES` 区间约束、`LO/UP/FX/FR/BV/LI/UI` 边界与 `'MARKER' 'INTORG'/'INTEND'` 整数段）。
+MoonBit 生态中已有优秀的纯 MoonBit 稀疏修正单纯形 LP/MILP 求解器 [`Freon793/moonopt`](https://github.com/Freon793/moonopt)。`moonlp` v1.0.0 与其形成清晰互补（详细对比见 [docs/comparison_with_moonopt.md](docs/comparison_with_moonopt.md)）：
+
+- **纯大规模稀疏 LP/MILP**：推荐使用 `Freon793/moonopt`（稀疏修正单纯形 + 稀疏 LU 分解）；两库通过标准 `.mps` / `.lp` 无损互通。
+- **凸二次规划（QP）与混合整数二次规划（MIQP）**：`moonopt` 仅支持线性目标 $c^T x$，无法表达或求解 $\frac{1}{2}x^T Q x + c^T x$。`moonlp` v1.0.0 原生提供：
+  1. **尺度归一化 Mehrotra 预测-校正原始-对偶内点法（`solve_qp`）**：支持任意正半定 Hessian $Q \succeq 0$（包括秩亏 SVM Gram 矩阵与含二值指示变量的 MIQP 松弛）、任意等式/不等式/盒约束/自由变量，显式拦截非凸输入（`NonConvex`）与无界退化射线（`Unbounded`）；
+  2. **混合整数二次规划引擎（`solve_miqp`）**：Best-Bound Branch-and-Bound + 节点凸 QP 松弛 + 固定整数连续 QP 修复启发式 + 严格状态与 `mip_gap` 传播；
+  3. **独立二次 KKT 与 Wolfe 强对偶证明器（`certify_qp_solution`）**：独立检验 $Q \succeq 0$、原始可行性、对偶符号、互补松弛、梯度驻点 $Qx + c - A^T y - z_l + z_u = 0$ 与 Wolfe 强对偶间隙；
+  4. **工业二次格式无损往返**：支持 `.qps`（MPS `QUADOBJ` / `QMATRIX` 段）与 CPLEX 二次 `.lp`（`+ [ ... ] / 2`）。
+
+---
+
+## 核心新增具体模型与客观验证结果（`moonopt` 无法直接求解）
+
+以下具体模型全部内置于 [`src/benchmarks_qp.mbt`](src/benchmarks_qp.mbt)，经 [`verify/verify_qp_miqp.py`](verify/verify_qp_miqp.py)（SciPy SLSQP + MIQP 全子集穷举）独立对拍验证，误差均 $\le 1.44\times 10^{-11}$：
+
+| 具体优化模型 | 问题类别与特征 | `moonlp` 实测最优结果 | 独立验证 / SciPy 对拍误差 | `wasm-gc` 实测耗时 |
+| :--- | :--- | :--- | :--- | ---: |
+| **Markowitz 6 资产投资组合** (`build_markowitz_portfolio_qp`, $r \ge 8\%$) | 连续凸 QP（$6\times 6$ 协方差矩阵 $\Sigma$ + 有效前沿） | $\frac{1}{2}w^T\Sigma w = \mathbf{0.004958677971}$（8 次迭代，5 资产分散配置） | Wolfe KKT=`true` (gap `5.89e-11`)；vs SciPy **`1.47e-12`** | **`57.35 µs`** |
+| **基数约束 Markowitz 选股** (`build_cardinality_portfolio_miqp`, 6 选 $\le 3$，最小持仓 10%) | **混合整数二次规划 MIQP**（12 变量、秩 6 半正定 Hessian + 6 二值变量） | 全局最优 **`0.005201920000`**（9 个 B&B 节点，`mip_gap=2.16e-12`；精选 **US_Eq 41% + Corp_Bond 49% + Gold 10%**） | vs 全 41 子集穷举精确解误差 **`4.37e-14`** | **`4.40 ms`** |
+| **带饱和约束线性 MPC 轨迹跟踪** (`build_linear_mpc_qp`, $N=8$) | 连续凸 QP（24 变量 + 16 动力学等式 + $\|u_t\| \le 1.0$, $\|v_t\| \le 1.5$） | LQR 代价 **`38.7957968155`**；$u_0=-1.0$ 精准限幅，$p_0=2.0 \to p_8=-0.011$ | Wolfe KKT=`true`；vs SciPy **`5.76e-13`** | **`857.16 µs`**（>1,100 Hz） |
+| **软间隔 SVM 对偶训练** (`build_svm_dual_qp`, $C=10$) | **秩亏半正定 QP**（$8\times 8$ **秩 2** Gram 矩阵 + 盒约束） | 对偶最优 **`-0.0928936368`**（7 次迭代，2 支持向量，全样本间隔 $\ge 1.0$） | Wolfe KKT=`true`；vs SciPy **`1.44e-11`** | **`74.12 µs`** |
+| **单纯形约束最小二乘 / 光谱解混** (`build_constrained_lsq_qp`) | 连续凸 QP + `.lp` 二次 / `.qps` `QUADOBJ` 格式往返 | 原模型、`.lp` 往返、`.qps` 往返最优值与 KKT 证书完全一致 | Wolfe KKT=`true`（三路径全绿） | — |
 
 ---
 
 ## 快速开始
 
 ```bash
-moon check
-moon test
+moon check --deny-warn
+moon test --deny-warn
 moon run src/examples
 moon bench --release
 
+# 独立 Python / SciPy + 穷举对拍验证 QP & MIQP 模型
+python verify/verify_qp_miqp.py
+
 # 跨后端全量验证（与 GitHub Actions CI 一致）
-moon test --target wasm-gc && moon bench --release --target wasm-gc
-moon test --target js      && moon bench --release --target js
-moon test --target native  && moon bench --release --target native
+moon test --deny-warn --target wasm-gc && moon bench --release --target wasm-gc
+moon test --deny-warn --target js      && moon bench --release --target js
+moon test --deny-warn --target native  && moon bench --release --target native
 ```
 
-### 示例：求解真实国际标准 Netlib `AFIRO` 与 5 城旅行商 TSP-MTZ
+### 示例 1：基数约束 Markowitz 投资组合优化（MIQP）与 Wolfe KKT 认证（QP）
 
 ```moonbit
-// 1. 解析并求解真实 Stanford SOL / Netlib AFIRO 基准算例 (28 rows, 32 cols)
-let afiro = @moonlp.parse_mps(@moonlp.netlib_afiro_mps())
-let sol = afiro.solve()              // -464.75314286 (canonical Netlib optimum)
-let cert = afiro.certify_lp_solution(sol, tol=1.0e-5) // certified_optimal == true
+// 1. 连续 Markowitz 均值-方差投资组合（Convex QP）+ Wolfe 强对偶 KKT 证明
+let qp = @moonlp.build_markowitz_portfolio_qp(target_return=0.08)
+let qsol = qp.solve()                               // 0.00495868 (8 IPM iters, ~57 us)
+let qcert = qp.certify_qp_solution(qsol)            // certified_optimal == true
 
-// 2. 使用 Dual Simplex 热启动分支定界求解 5 城 TSP (MTZ 消去子环路 MILP)
-let tsp = @moonlp.build_tsp5_mtz_model()
-let tsp_sol = @moonlp.solve_milp_warm(tsp) // Optimal tour = 80.0
+// 2. 基数约束投资组合（MIQP：6 资产限选 <= 3 只、单只持仓 10%~50%）
+let miqp = @moonlp.build_cardinality_portfolio_miqp(
+  max_assets=3, min_weight=0.1, max_weight=0.5, target_return=0.08
+)
+let msol = miqp.solve()                             // 0.00520192 (US_Eq 41%, Corp_Bond 49%, Gold 10%)
+```
+
+### 示例 2：带执行器饱和约束的实时线性 MPC（Convex QP）
+
+```moonbit
+let mpc = @moonlp.build_linear_mpc_qp(horizon=8, x0_pos=2.0, x0_vel=0.0, u_max=1.0)
+let sol = mpc.solve()                               // LQR = 38.7958, u_0 = -1.0, ~857 us on wasm-gc
+let cert = mpc.certify_qp_solution(sol)             // certified_optimal == true
 ```
 
 ---
 
-## 实测性能基准（`moon bench --release --target wasm-gc`）
+## 全量实测性能基准（`moon bench --release --target wasm-gc`）
 
 以下为 Windows 本机实测耗时（`moon bench --release --target wasm-gc`，10 轮统计均值 ± 标准差）：
 
 | 基准算例 | 规模 / 类型 | 实测均值 (`mean ± σ`) | 区间 (`min … max`) |
 | :--- | :--- | ---: | ---: |
-| **HiGHS `AVGAS`** | 11×8 LP（38 非零元） | **`4.56 µs`** ± 34.11 ns | `4.51 µs … 4.59 µs` |
-| **Netlib `AFIRO`** | 28×32 LP（88 非零元） | **`10.12 µs`** ± 422.24 ns | `9.83 µs … 11.14 µs` |
-| **Netlib `ADLITTLE`** | 56×97 LP（480 非零元） | **`654.07 µs`** ± 19.83 µs | `638.61 µs … 704.44 µs` |
-| **5 城 TSP-MTZ（冷启动 B&B）** | 20 二值 + 4 连续 MILP | `55.79 µs` ± 382.78 ns | `55.38 µs … 56.39 µs` |
-| **5 城 TSP-MTZ（Dual 热启动）** | 20 二值 + 4 连续 MILP | `53.76 µs` ± 1.13 µs | `52.31 µs … 55.19 µs` |
-| **5 城 TSP-MTZ（Branch-and-Cut）** | 融合 GMI + 热启动 + 启发式 | **`52.23 µs`** ± 422.26 ns | `51.73 µs … 53.03 µs` |
-| **10 物品 0-1 背包（冷启动 B&B）** | 10 二值 MILP | **`62.96 µs`** ± 878.77 ns | `61.75 µs … 64.48 µs` |
+| **Markowitz 6 资产投资组合（QP）** | 6 变量正定协方差 QP（IPM） | **`57.35 µs`** ± 4.76 µs | `54.42 µs … 67.02 µs` |
+| **软间隔 SVM 对偶训练（QP）** | 8×8 秩 2 半正定 Gram QP（IPM） | **`74.12 µs`** ± 2.27 µs | `72.60 µs … 79.90 µs` |
+| **8 步约束线性 MPC（QP）** | 24 变量 + 16 动力学等式 QP（IPM） | **`857.16 µs`** ± 6.55 µs | `845.24 µs … 868.28 µs` |
+| **基数约束 Markowitz 选股（MIQP）** | 6 连续 + 6 二值、秩 6 半正定 MIQP | **`4.40 ms`** ± 65.32 µs | `4.34 ms … 4.52 ms` |
+| **HiGHS `AVGAS`（LP）** | 11×8 LP（38 非零元） | **`5.00 µs`** ± 119.00 ns | `4.93 µs … 5.33 µs` |
+| **Netlib `AFIRO`（LP）** | 28×32 LP（88 非零元） | **`15.89 µs`** ± 653.70 ns | `15.34 µs … 17.42 µs` |
+| **Netlib `ADLITTLE`（LP）** | 56×97 LP（480 非零元） | **`623.70 µs`** ± 3.89 µs | `619.11 µs … 632.12 µs` |
+| **5 城 TSP-MTZ（Branch-and-Cut MILP）** | 20 二值 + 4 连续 MILP | **`67.42 µs`** ± 1.92 µs | `64.79 µs … 70.17 µs` |
+| **10 物品 0-1 背包（B&B MILP）** | 10 二值 MILP | **`70.53 µs`** ± 277.37 ns | `70.28 µs … 71.21 µs` |
 
 ---
 
-## 63 项客观数学与正确性回归测试清单（`wasm-gc` / `js` / `native` `--deny-warn` 全绿）
+## 核心特性与测试覆盖（77 项单元测试 + 10 项性能基准，`--deny-warn` 三后端全绿）
 
-| 类别 | 覆盖测试算例 |
-| :--- | :--- |
-| **国际标准工业基准** | **真实 Netlib `ADLITTLE`**（56×97，Ruiz 平衡缩放 + KKT 认证）、**真实 Netlib `AFIRO`**（28×32，最优值 `-464.75314286` + KKT 强对偶认证）、**真实 HiGHS `AVGAS` & `SMALL_MIP`**、**真实 MIPLIB 3.0 `FLUGPL`**（根节点 GMI 割平面收紧） |
-| **v0.9.0 边界与数值终验回归集（4 项）** | GMI 严格精确整数松弛判定 + 割后界覆盖真最优断言（$a=2^{-31}$ 最优 `2.0`）、KKT 中间值溢出产生 `NaN` 拦截（$10^{200}$ 等式对偶）、窄区间变量 `[0, 5e-10]` 不被折叠为固定变量（`obj=500` + MPS 往返）、小数参数固定零模型 `solve_lp` 残差对齐 `config.tol` 与 `NumericalError` 状态隔离 |
-| **v0.8.0 发布验收回归集（3 项）** | 整数候选与启发式严格遵守 `config.tol`（$x \le 0.9999995 \Rightarrow x=0$）、固定零变量系数 $M=0$ 与 $M=10^6$ 缩放与 GMI 区间界贡献不变性（$a=2^{-29}$ 全入口均得 `0.0703125`）、逐行绝对对偶符号与逐列局部尺度 KKT 认证（拒绝无关 $10^9 z$ 掩护下的错误符号乘子） |
-| **v0.7.0 最优性/割平面回归集（7 项）** | 候选修复不提前关闭松弛未达界节点（$y \le 2\times10^7 x$）、GMI 保留有意义小系数不切掉真最优解（$0.055$）、纯相对 MIP gap 剪枝不剪掉 $10^{-6}$ 微尺度真最优、KKT 证书对 $10^9$ 目标常数尺度不变、$10^{-10}$/$10^{-14}$ 跨入口有界性与紧 Phase I、Presolve 精确来源行对偶分配、`.lp` 严格消费完整 RHS/Bounds |
-| **v0.6.0 正确性回归集（8 项）** | `max_iters=1` 状态传播（4 入口统一返回 `MaxIterations`）、LP 无界 vs MILP 不可行/无界消歧、$10^8 x \le 99{,}999{,}950$ 次容差取整细分分支、严格 KKT 拒绝次优点与 `NaN`/`Inf`、$10^{-10} x \le 1$ 自动缩放与紧比率测试、`.lp` 目标常数往返、`.mps` `OBJSENSE MAX`+目标常数+固定二值变量往返、`solve_presolved` 原空间对偶恢复与 KKT 认证 |
-| **原始 & 对偶单纯形 LP** | 2D 生产规划 + 影子价格、Diet `>=` 最小化（Primal 与 Dual Simplex 双校验）、自由变量与负下界、不可行与无界证明（Primal & Dual）、KKT 强对偶证书、RHS/检验数灵敏度分析 |
-| **病态压测与图论 LP** | **Beale 1955 退化循环 LP**（Bland 防循环）、**Klee-Minty 4D 立方体**、CLRS 网络最大流（=23）、3×3 运输问题 LP（=715）、多周期供应链排产 LP（=235）、合金混料 `LinearExpr` |
-| **热启动 B&B / GMI 割平面 MILP** | **5 城旅行商 TSP-MTZ MILP（=80）**、**GMI 割平面根节点收敛（41.25→40、63→55）**、**真·混合整数连续 MILP（1 刀 GMI 割平面 23.75→23.333）**、5/10 物品 0-1 背包、3×3 指派、混合设施选址、4 周期批量排产 Lot-Sizing MILP（=302）、**64 变量 4×4 数独实时 MILP** |
-| **标准格式与预处理** | CPLEX `.lp` 往返解析导出、Netlib `.mps` LP/MILP 双向解析导出往返闭环、非法输入 `ParseError` 容错、Presolve 界收紧与冗余行消除 |
+- **凸二次规划（QP）与混合整数二次规划（MIQP）引擎** (`src/qp.mbt`, `src/miqp.mbt`, `src/benchmarks_qp.mbt`, `src/qp_wbtest.mbt`)
+  - 尺度归一化 Mehrotra 预测-校正原始-对偶内点法（避免 $s_i, z_i \to 0$ 除零精度衰减）、平移 Cholesky 半正定校验与 `NonConvex` 显式状态、无界退化射线验证、固定整数连续 QP 修复启发式。
+  - **10 项 v1.0.0 QP/MIQP 专项测试**：解析 2D 凸 QP、凹目标最大化与弱有效约束退化精度、无约束/纯等式快速路径、非凸/不可行/无界半正定拦截、Markowitz 有效前沿单调性、基数约束 MIQP 全局最优、8 步约束线性 MPC、秩 2 半正定 SVM 对偶训练、单纯形最小二乘与 `.lp`/`.qps` `QUADOBJ` 无损往返、纯整数二次追踪 MIQP。
+- **LP / MILP 完整求解与数值加固（63 项回归集）** (`src/simplex.mbt`, `src/dual_simplex.mbt`, `src/scaling.mbt`, `src/milp.mbt`, `src/warm_bb.mbt`, `src/cuts.mbt`, `src/branch_and_cut.mbt`, `src/presolve.mbt`)
+  - 自动 Ruiz 平衡缩放、定价容差与可行性容差解耦、Dual Simplex 热启动、GMI 割平面、Presolve/Postsolve 对偶恢复，通过 Netlib `ADLITTLE`/`AFIRO`、HiGHS `AVGAS`/`SMALL_MIP`、MIPLIB `FLUGPL` 与 4 轮对抗数值回归。
+- **独立最优性证明与双工业标准格式** (`src/certificate.mbt`, `src/lp_format.mbt`, `src/mps_format.mbt`)
+  - `certify_lp_solution` & `certify_qp_solution`（线性/二次 KKT + Wolfe 强对偶）。
+  - CPLEX `.lp`（含常数项与 `[ ... ] / 2` 二次目标）及 Netlib / Maros-Mészáros `.mps`/`.qps`（含 `OBJSENSE`、`RANGES`、`QUADOBJ`、`QMATRIX`）。
 
 ---
 
@@ -94,30 +113,31 @@ let tsp_sol = @moonlp.solve_milp_warm(tsp) // Optimal tour = 80.0
 
 ```text
 moonlp/
-├── moon.mod                      # MoonBit 1.0 模块配置 (v0.9.0)
-├── .github/workflows/ci.yml      # wasm-gc / js / native 三后端测试 + moon bench 矩阵
+├── moon.mod                      # MoonBit 1.0 模块配置 (v1.0.0)
+├── docs/
+│   └── comparison_with_moonopt.md # 与 Freon793/moonopt 的定位分工、差异对照与实测验证
+├── .github/workflows/ci.yml      # wasm-gc / js / native 三后端 --deny-warn + bench 矩阵
 ├── src/
-│   ├── moon.pkg                  # 包配置（含 wbtest @bench 依赖）
-│   ├── types.mbt                 # 核心类型、LinearExpr 与 IEEE-754 数值/有限性工具
-│   ├── model.mbt                 # 代数建模 DSL 与解验证器（拒绝 NaN/Inf）
-│   ├── simplex.mbt               # 稀疏感知 Two-Phase Primal Simplex + 自动 Ruiz 缩放 + Harris/Bland
-│   ├── dual_simplex.mbt          # Dual Simplex 引擎（零 Phase I & 热启动）
-│   ├── scaling.mbt               # Ruiz 迭代 L-infinity 矩阵平衡缩放与精确反缩放
-│   ├── milp.mbt                  # Best-Bound B&B 基线引擎 + 候选修复 + 无界消歧
-│   ├── warm_bb.mbt               # Dual Simplex 热启动 Branch-and-Bound 引擎
-│   ├── cuts.mbt                  # Gomory Mixed-Integer (GMI) 割平面引擎
-│   ├── branch_and_cut.mbt        # 旗舰统一 Branch-and-Cut 引擎（GMI + 热启动 + 舍入启发式）
-│   ├── presolve.mbt              # Presolve 单变量界收紧 + Postsolve 原空间对偶恢复
-│   ├── certificate.mbt           # 严格 KKT 最优性证明器（含对偶可行性与有限界乘子）
-│   ├── sensitivity.mbt           # 后验约束/变量灵敏度与 RHS 扰动分析
-│   ├── lp_format.mbt             # CPLEX .lp 双向解析器与导出器（含目标常数）
-│   ├── mps_format.mbt            # Netlib / MIPLIB .mps 双向解析器与导出器（含 OBJSENSE/FX/常数）
-│   ├── benchmarks.mbt            # 真实 Netlib AFIRO、HiGHS AVGAS 与 TSP-MTZ 算例集
-│   ├── benchmarks_netlib_large.mbt # 真实 Netlib ADLITTLE、HiGHS SMALL_MIP 与 MIPLIB FLUGPL
-│   ├── moonlp_wbtest.mbt         # 63 项全量单元测试与正确性回归集（--deny-warn 全绿）
-│   ├── moonlp_bench_wbtest.mbt   # 官方 moon bench --release 性能基准套件
-│   └── examples/main.mbt         # 6 合 1 CLI 演示（含 Netlib AFIRO 与 5 城 TSP-MTZ）
-└── verify/                       # 独立 Python 数学对拍校验脚本
+│   ├── types.mbt                 # 核心类型（含 QuadTerm、NonConvex 状态、LinearExpr）
+│   ├── model.mbt                 # LP/MILP/QP/MIQP 统一代数建模 DSL 与独立验证器
+│   ├── qp.mbt                    # 尺度归一化 Mehrotra 原始-对偶内点法凸 QP 求解器
+│   ├── miqp.mbt                  # Best-Bound Branch-and-Bound MIQP 引擎
+│   ├── benchmarks_qp.mbt         # 5 个具体 QP/MIQP 应用模型（Markowitz/MIQP/MPC/SVM/LSQ）
+│   ├── qp_wbtest.mbt             # 10 项 QP/MIQP 专项与格式往返测试
+│   ├── certificate.mbt           # 线性 KKT + 二次 KKT / Wolfe 强对偶独立证明器
+│   ├── lp_format.mbt             # CPLEX .lp 双向解析/导出（支持 [ ... ] / 2 二次目标）
+│   ├── mps_format.mbt            # MPS / QPS 双向解析/导出（支持 QUADOBJ / QMATRIX）
+│   ├── simplex.mbt               # Two-Phase Primal Simplex + 自动 Ruiz 缩放 + 定价解耦
+│   ├── dual_simplex.mbt          # Dual Simplex 引擎
+│   ├── scaling.mbt               # Ruiz 迭代 L-infinity 矩阵平衡缩放
+│   ├── milp.mbt / warm_bb.mbt / cuts.mbt / branch_and_cut.mbt # 四大 MILP 引擎
+│   ├── presolve.mbt / sensitivity.mbt # Presolve 对偶恢复 & 灵敏度分析
+│   ├── benchmarks.mbt / benchmarks_netlib_large.mbt # Netlib/HiGHS/MIPLIB 算例集
+│   ├── moonlp_wbtest.mbt         # 63 项 LP/MILP 单元测试与 4 轮对抗回归集
+│   ├── moonlp_bench_wbtest.mbt   # 10 项官方 moon bench --release 性能基准（含 QP/MIQP）
+│   └── examples/main.mbt         # 10 合 1 CLI 演示（含 Markowitz QP/MIQP、MPC、SVM）
+└── verify/
+    └── verify_qp_miqp.py         # 独立 Python/SciPy + 全子集穷举对拍验证脚本
 ```
 
 ## License

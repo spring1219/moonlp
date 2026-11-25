@@ -6,6 +6,16 @@ import {
 }
 
 // Values
+pub fn build_cardinality_portfolio_miqp(max_assets? : Int32, min_weight? : Double, max_weight? : Double, target_return? : Double) -> Model
+
+pub fn build_constrained_lsq_qp() -> Model
+
+pub fn build_linear_mpc_qp(horizon? : Int32, x0_pos? : Double, x0_vel? : Double, u_max? : Double, v_max? : Double) -> Model
+
+pub fn build_markowitz_portfolio_qp(target_return? : Double, max_weight? : Double) -> Model
+
+pub fn build_svm_dual_qp(c_reg? : Double) -> Model
+
 pub fn build_tsp5_mtz_model() -> Model
 
 pub fn highs_avgas_mps() -> String
@@ -33,6 +43,10 @@ pub fn solve_milp_branch_and_cut(Model, max_root_cuts? : Int32, config? : Solver
 pub fn solve_milp_warm(Model, config? : SolverConfig) -> Solution
 
 pub fn solve_milp_with_cuts(Model, max_cuts? : Int32, config? : SolverConfig) -> (Solution, GmiCutReport)
+
+pub fn solve_miqp(Model, config? : SolverConfig) -> Solution
+
+pub fn solve_qp(Model, config? : SolverConfig) -> Solution
 
 // Errors
 #derive(Eq, @debug.Debug)
@@ -98,18 +112,24 @@ pub struct Model {
   vars : Array[VarSpec]
   constraints : Array[Constraint]
   mut obj_constant : Double
+  quad_terms : Array[QuadTerm]
 }
 pub fn Model::add_binary_var(Self, String, obj? : Double) -> VarId
 pub fn Model::add_constraint(Self, String, Array[Term], Relation, Double) -> Unit
 pub fn Model::add_continuous_var(Self, String, lb? : Double, ub? : Double, obj? : Double) -> VarId
 pub fn Model::add_expr_constraint(Self, String, LinearExpr, Relation, Double) -> Unit
 pub fn Model::add_int_var(Self, String, lb? : Double, ub? : Double, obj? : Double) -> VarId
+pub fn Model::add_quad_obj_term(Self, VarId, VarId, Double) -> Unit
 pub fn Model::add_var(Self, String, lb? : Double, ub? : Double, kind? : VarKind, obj? : Double) -> VarId
 pub fn Model::analyze_constraints(Self, Solution, tol? : Double) -> Array[ConstraintSensitivity]
 pub fn Model::analyze_variables(Self, Solution, tol? : Double) -> Array[VarSensitivity]
 pub fn Model::certify_lp_solution(Self, Solution, tol? : Double) -> OptimalityCertificate
+pub fn Model::certify_qp_solution(Self, Solution, tol? : Double) -> OptimalityCertificate
+pub fn Model::clear_quad_obj(Self) -> Unit
 pub fn Model::clone_with_bounds(Self, Array[Double], Array[Double]) -> Self
+pub fn Model::eval_objective(Self, Array[Double]) -> Double
 pub fn Model::has_integer_vars(Self) -> Bool
+pub fn Model::has_quad_obj(Self) -> Bool
 pub fn Model::matrix_scale_ratio(Self) -> Double
 pub fn Model::new(Sense) -> Self
 pub fn Model::num_constraints(Self) -> Int32
@@ -119,6 +139,7 @@ pub fn Model::rhs_perturbation_delta(Self, Solution, Int32, Double, config? : So
 pub fn Model::ruiz_scale(Self, passes? : Int32) -> (Self, ScalingReport)
 pub fn Model::set_obj_constant(Self, Double) -> Unit
 pub fn Model::set_objective(Self, LinearExpr) -> Unit
+pub fn Model::set_quad_obj_matrix(Self, Array[VarId], Array[Array[Double]], half? : Bool) -> Unit
 pub fn Model::set_sense(Self, Sense) -> Unit
 pub fn Model::set_var_bounds(Self, VarId, Double, Double) -> Unit
 pub fn Model::set_var_obj(Self, VarId, Double) -> Unit
@@ -147,6 +168,13 @@ pub(all) struct PresolveReport {
   bounds_tightened : Int32
   redundant_rows_removed : Int32
   infeasible_detected : Bool
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct QuadTerm {
+  var1 : VarId
+  var2 : VarId
+  coeff : Double
 }
 
 #derive(Eq, @debug.Debug)
@@ -204,6 +232,7 @@ pub(all) enum Status {
   MaxIterations
   NodeLimit
   NumericalError
+  NonConvex
 }
 
 #derive(Eq, @debug.Debug)

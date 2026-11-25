@@ -127,6 +127,7 @@ fn make_zero_obj_model(model : Model) -> Model {
     vars: new_vars,
     constraints: model.constraints,
     obj_constant: 0.0,
+    quad_terms: [],
   }
 }
 
@@ -219,6 +220,7 @@ fn solve_milp_core(
   model : Model,
   config : SolverConfig,
   check_unbounded : Bool,
+  incumbent? : Solution,
 ) -> Solution {
   let sense_sign = match model.sense {
     Minimize => 1.0
@@ -259,9 +261,12 @@ fn solve_milp_core(
   let queue : Array[BBNode] = [
     { lbs: root_lbs, ubs: root_ubs, bound: -1.0e308, },
   ]
-  let mut best_min_obj = 1.0e308
+  let mut best_min_obj = match incumbent {
+    Some(sol) => sol.objective * sense_sign
+    None => 1.0e308
+  }
   let mut best_pruned_bound = 1.0e308
-  let mut best_sol : Solution? = None
+  let mut best_sol = incumbent
   let mut nodes_explored = 0
   let mut total_iters = 0
   let mut hit_unbounded = false
@@ -296,7 +301,7 @@ fn solve_milp_core(
         has_unproved = true
         continue
       }
-      NodeLimit | InfeasibleOrUnbounded | NumericalError => {
+      NodeLimit | InfeasibleOrUnbounded | NumericalError | NonConvex => {
         has_unproved = true
         continue
       }

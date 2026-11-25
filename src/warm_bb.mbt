@@ -339,7 +339,7 @@ pub fn solve_milp_warm(
   }
 
   let (p2_st, p2_it) = run_simplex_phase(
-    tab, basis, col_active, m_total, num_cols, config,
+    tab, basis, col_active, m_total, num_cols, config, costs=std_obj,
   )
   total_iters = total_iters + p2_it
   if p2_st == Unbounded {

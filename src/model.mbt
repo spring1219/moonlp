@@ -1,5 +1,5 @@
 ///|
-/// Algebraic LP/MILP Model builder and solution verifier.
+/// Algebraic LP/MILP/QP/MIQP Model builder and solution verifier.
 
 ///|
 #derive(Debug)
@@ -8,11 +8,12 @@ pub struct Model {
   vars : Array[VarSpec]
   constraints : Array[Constraint]
   mut obj_constant : Double
+  quad_terms : Array[QuadTerm]
 }
 
 ///|
 pub fn Model::new(sense : Sense) -> Model {
-  { sense, vars: [], constraints: [], obj_constant: 0.0, }
+  { sense, vars: [], constraints: [], obj_constant: 0.0, quad_terms: [], }
 }
 
 ///|
@@ -148,6 +149,125 @@ pub fn Model::add_expr_constraint(
 }
 
 ///|
+/// Add a quadratic objective term `coeff * x_{var1} * x_{var2}` directly to the objective.
+/// Duplicate pairs are accumulated symmetrically when assembling the Hessian.
+pub fn Model::add_quad_obj_term(
+  self : Model,
+  var1 : VarId,
+  var2 : VarId,
+  coeff : Double,
+) -> Unit {
+  if coeff != 0.0 {
+    self.quad_terms.push({ var1, var2, coeff, })
+  }
+}
+
+///|
+/// Add a symmetric quadratic form to the objective over `vars`:
+///   - `half = true` (default): adds `0.5 * sum_{i,j} q_mat[i][j] * x_i * x_j`
+///   - `half = false`:          adds `sum_{i,j} q_mat[i][j] * x_i * x_j`
+pub fn Model::set_quad_obj_matrix(
+  self : Model,
+  vars : Array[VarId],
+  q_mat : Array[Array[Double]],
+  half~ : Bool = true,
+) -> Unit {
+  self.quad_terms.clear()
+  let k = vars.length()
+  let factor = if half { 0.5 } else { 1.0 }
+  for i = 0; i < k; i = i + 1 {
+    if i >= q_mat.length() {
+      break
+    }
+    let row = q_mat[i]
+    for j = i; j < k; j = j + 1 {
+      if j >= row.length() {
+        break
+      }
+      if i == j {
+        let c = factor * row[i]
+        if c != 0.0 {
+          self.quad_terms.push({ var1: vars[i], var2: vars[i], coeff: c, })
+        }
+      } else {
+        let qji = if j < q_mat.length() && i < q_mat[j].length() {
+          q_mat[j][i]
+        } else {
+          0.0
+        }
+        let c = factor * (row[j] + qji)
+        if c != 0.0 {
+          self.quad_terms.push({ var1: vars[i], var2: vars[j], coeff: c, })
+        }
+      }
+    }
+  }
+}
+
+///|
+pub fn Model::clear_quad_obj(self : Model) -> Unit {
+  self.quad_terms.clear()
+}
+
+///|
+/// Check whether the model has any nonzero aggregated quadratic objective term.
+pub fn Model::has_quad_obj(self : Model) -> Bool {
+  if self.quad_terms.length() == 0 {
+    return false
+  }
+  let n = self.vars.length()
+  let q = self.build_symmetric_hessian()
+  for i = 0; i < n; i = i + 1 {
+    for j = 0; j < n; j = j + 1 {
+      if q[i][j] != 0.0 {
+        return true
+      }
+    }
+  }
+  false
+}
+
+///|
+/// Assemble the symmetric n x n Hessian matrix Q such that the quadratic part of
+/// the objective is exactly `0.5 * x^T Q x`.
+fn Model::build_symmetric_hessian(self : Model) -> Array[Array[Double]] {
+  let n = self.vars.length()
+  let q : Array[Array[Double]] = []
+  for _i = 0; _i < n; _i = _i + 1 {
+    q.push(Array::make(n, 0.0))
+  }
+  for k = 0; k < self.quad_terms.length(); k = k + 1 {
+    let qt = self.quad_terms[k]
+    let i = qt.var1.index
+    let j = qt.var2.index
+    if i >= 0 && i < n && j >= 0 && j < n {
+      if i == j {
+        q[i][i] = q[i][i] + 2.0 * qt.coeff
+      } else {
+        q[i][j] = q[i][j] + qt.coeff
+        q[j][i] = q[j][i] + qt.coeff
+      }
+    }
+  }
+  q
+}
+
+///|
+/// Evaluate the exact objective value `obj_constant + c^T x + sum q_k x_i x_j`.
+pub fn Model::eval_objective(self : Model, x : Array[Double]) -> Double {
+  let mut val = self.obj_constant
+  let n = self.vars.length()
+  for i = 0; i < n; i = i + 1 {
+    val = val + self.vars[i].obj * x[i]
+  }
+  for k = 0; k < self.quad_terms.length(); k = k + 1 {
+    let qt = self.quad_terms[k]
+    val = val + qt.coeff * x[qt.var1.index] * x[qt.var2.index]
+  }
+  val
+}
+
+///|
 pub fn Model::has_integer_vars(self : Model) -> Bool {
   for i = 0; i < self.vars.length(); i = i + 1 {
     match self.vars[i].kind {
@@ -175,11 +295,13 @@ pub fn Model::clone_with_bounds(
     vars: new_vars,
     constraints: self.constraints,
     obj_constant: self.obj_constant,
+    quad_terms: self.quad_terms,
   }
 }
 
 ///|
-/// Independently verify primal feasibility, variable bounds, integrality, and objective value.
+/// Independently verify primal feasibility, variable bounds, integrality, and objective value
+/// (supporting both linear and quadratic objectives).
 pub fn Model::verify_solution(
   self : Model,
   sol : Solution,
@@ -219,6 +341,14 @@ pub fn Model::verify_solution(
       return false
     }
   }
+  for k = 0; k < self.quad_terms.length(); k = k + 1 {
+    let qt = self.quad_terms[k]
+    let q_term = qt.coeff * sol.primal[qt.var1.index] * sol.primal[qt.var2.index]
+    obj_val = obj_val + q_term
+    if !is_finite_double(q_term) || !is_finite_double(obj_val) {
+      return false
+    }
+  }
   if !is_finite_double(obj_val) ||
     (obj_val - sol.objective).abs() > tol * (1.0 + obj_val.abs()) {
     return false
@@ -244,7 +374,7 @@ pub fn Model::verify_solution(
 }
 
 ///|
-/// Compute the exact maximum primal bound/constraint violation of an LP solution
+/// Compute the exact maximum primal bound/constraint violation of a continuous solution
 /// (ignoring integrality), or 1.0e300 if non-Optimal / non-finite / inconsistent objective.
 fn Model::max_lp_violation(
   self : Model,
@@ -282,6 +412,14 @@ fn Model::max_lp_violation(
       return 1.0e300
     }
   }
+  for k = 0; k < self.quad_terms.length(); k = k + 1 {
+    let qt = self.quad_terms[k]
+    let q_term = qt.coeff * sol.primal[qt.var1.index] * sol.primal[qt.var2.index]
+    obj_val = obj_val + q_term
+    if !is_finite_double(q_term) || !is_finite_double(obj_val) {
+      return 1.0e300
+    }
+  }
   if (obj_val - sol.objective).abs() >
     obj_tol * (1.0 + obj_val.abs() + self.obj_constant.abs()) {
     return 1.0e300
@@ -313,12 +451,19 @@ fn Model::max_lp_violation(
 }
 
 ///|
-/// High-level entry point: automatically dispatches to LP Simplex or MILP Branch-and-Bound.
+/// High-level entry point: automatically dispatches to LP Simplex, MILP Branch-and-Bound,
+/// Convex QP Primal-Dual Interior-Point, or MIQP Branch-and-Bound.
 pub fn Model::solve(
   self : Model,
   config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
-  if self.has_integer_vars() {
+  let has_q = self.has_quad_obj()
+  let has_i = self.has_integer_vars()
+  if has_q && has_i {
+    solve_miqp(self, config~)
+  } else if has_q {
+    solve_qp(self, config~)
+  } else if has_i {
     solve_milp(self, config~)
   } else {
     solve_lp(self, config~)

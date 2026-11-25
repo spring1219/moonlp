@@ -1,5 +1,6 @@
 ///|
-/// Core types for moonlp: Linear Programming (LP) & Mixed-Integer Linear Programming (MILP).
+/// Core types for moonlp: Linear, Mixed-Integer Linear, Convex Quadratic (QP),
+/// and Mixed-Integer Quadratic Programming (MIQP).
 
 ///|
 #derive(Debug, Eq)
@@ -34,6 +35,7 @@ pub(all) enum Status {
   MaxIterations
   NodeLimit
   NumericalError
+  NonConvex
 }
 
 ///|
@@ -46,6 +48,17 @@ pub(all) struct VarId {
 #derive(Debug, Eq)
 pub(all) struct Term {
   var_id : VarId
+  coeff : Double
+}
+
+///|
+/// Quadratic objective term representing `coeff * x_{var1} * x_{var2}` directly
+/// in the objective function (i.e. diagonal `coeff * x_i^2` contributes `2 * coeff`
+/// to Hessian Q_ii, off-diagonal `coeff * x_i * x_j` contributes `coeff` to Q_ij and Q_ji).
+#derive(Debug, Eq)
+pub(all) struct QuadTerm {
+  var1 : VarId
+  var2 : VarId
   coeff : Double
 }
 

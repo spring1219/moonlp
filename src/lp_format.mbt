@@ -53,7 +53,56 @@ fn format_linear_terms(model : Model, terms : Array[Term]) -> String {
 }
 
 ///|
-/// Export a Model to standard CPLEX `.lp` text format.
+fn format_quad_block(model : Model) -> String {
+  let q = model.build_symmetric_hessian()
+  let n = model.vars.length()
+  let buf = StringBuilder()
+  let mut emitted = false
+  for i = 0; i < n; i = i + 1 {
+    for j = i; j < n; j = j + 1 {
+      let c = if i == j { q[i][i] } else { 2.0 * q[i][j] }
+      if c == 0.0 {
+        continue
+      }
+      if !emitted {
+        emitted = true
+        if c < 0.0 {
+          buf.write_string("- ")
+          if -c != 1.0 {
+            buf.write_string((-c).to_string())
+            buf.write_string(" ")
+          }
+        } else if c != 1.0 {
+          buf.write_string(c.to_string())
+          buf.write_string(" ")
+        }
+      } else if c < 0.0 {
+        buf.write_string(" - ")
+        if -c != 1.0 {
+          buf.write_string((-c).to_string())
+          buf.write_string(" ")
+        }
+      } else {
+        buf.write_string(" + ")
+        if c != 1.0 {
+          buf.write_string(c.to_string())
+          buf.write_string(" ")
+        }
+      }
+      buf.write_string(model.vars[i].name)
+      if i == j {
+        buf.write_string(" ^ 2")
+      } else {
+        buf.write_string(" * ")
+        buf.write_string(model.vars[j].name)
+      }
+    }
+  }
+  buf.to_string()
+}
+
+///|
+/// Export a Model (LP/MILP/QP/MIQP) to standard CPLEX `.lp` text format.
 pub fn Model::to_lp_string(self : Model) -> String {
   let buf = StringBuilder()
   match self.sense {
@@ -75,6 +124,14 @@ pub fn Model::to_lp_string(self : Model) -> String {
     } else {
       buf.write_string(" - ")
       buf.write_string((-self.obj_constant).to_string())
+    }
+  }
+  if self.has_quad_obj() {
+    let qstr = format_quad_block(self)
+    if qstr.length() > 0 {
+      buf.write_string(" + [ ")
+      buf.write_string(qstr)
+      buf.write_string(" ] / 2")
     }
   }
   buf.write_string("\nSubject To\n")
@@ -266,7 +323,14 @@ fn tokenize_lp_line(line : String) -> Array[String] {
       i = i + 1
       continue
     }
-    if c == ':' || c == '+' || c == '-' {
+    if c == ':' ||
+      c == '+' ||
+      c == '-' ||
+      c == '[' ||
+      c == ']' ||
+      c == '*' ||
+      c == '^' ||
+      c == '/' {
       let b = StringBuilder()
       b.write_char(c)
       tokens.push(b.to_string())
@@ -507,7 +571,150 @@ fn parse_signed_number(
 }
 
 ///|
-/// Parse standard CPLEX `.lp` text into a `Model`.
+fn parse_quad_tokens(
+  tokens : Array[String],
+  model : Model,
+  name_to_id : Map[String, VarId],
+  scale : Double,
+) -> Unit raise ParseError {
+  let n = tokens.length()
+  let mut i = 0
+  let mut sign = 1.0
+  while i < n {
+    let tok = tokens[i]
+    if tok == "+" {
+      sign = 1.0
+      i = i + 1
+      continue
+    }
+    if tok == "-" {
+      sign = -1.0
+      i = i + 1
+      continue
+    }
+    let mut coeff = 1.0
+    match try_parse_double(tok) {
+      Some(num) => {
+        coeff = num
+        i = i + 1
+        if i >= n {
+          raise ParseError("Dangling coefficient in LP quadratic objective")
+        }
+      }
+      None => ()
+    }
+    let v1_name = tokens[i]
+    let v1 = get_or_create_var(model, name_to_id, v1_name)
+    i = i + 1
+    if i >= n {
+      raise ParseError("Incomplete quadratic term after variable: " + v1_name)
+    }
+    if tokens[i] == "^" {
+      if i + 1 >= n || tokens[i + 1] != "2" {
+        raise ParseError("Only exponent ^ 2 is supported in QP objective")
+      }
+      model.add_quad_obj_term(v1, v1, sign * coeff * scale)
+      i = i + 2
+    } else if tokens[i] == "*" {
+      if i + 1 >= n {
+        raise ParseError("Missing second variable after * in QP objective")
+      }
+      let v2 = get_or_create_var(model, name_to_id, tokens[i + 1])
+      model.add_quad_obj_term(v1, v2, sign * coeff * scale)
+      i = i + 2
+    } else {
+      raise ParseError(
+        "Expected '^ 2' or '* var' in QP objective near: " + tokens[i],
+      )
+    }
+    sign = 1.0
+  }
+}
+
+///|
+fn parse_objective_tokens(
+  tokens : Array[String],
+  model : Model,
+  name_to_id : Map[String, VarId],
+) -> Unit raise ParseError {
+  let n = tokens.length()
+  let lin_tokens : Array[String] = []
+  let mut i = 0
+  while i < n {
+    let tok = tokens[i]
+    if tok == "[" {
+      // Check if previous token in lin_tokens is a standalone outer sign (+ or -)
+      let mut outer_sign = 1.0
+      if lin_tokens.length() > 0 {
+        let last = lin_tokens[lin_tokens.length() - 1]
+        if last == "+" {
+          let _ = lin_tokens.pop()
+          outer_sign = 1.0
+        } else if last == "-" {
+          let _ = lin_tokens.pop()
+          outer_sign = -1.0
+        }
+      }
+      let q_tokens : Array[String] = []
+      i = i + 1
+      let mut closed = false
+      while i < n {
+        if tokens[i] == "]" {
+          closed = true
+          i = i + 1
+          break
+        }
+        q_tokens.push(tokens[i])
+        i = i + 1
+      }
+      if !closed {
+        raise ParseError("Unclosed '[' in LP quadratic objective")
+      }
+      let mut scale = outer_sign
+      if i + 1 < n && tokens[i] == "/" {
+        match try_parse_double(tokens[i + 1]) {
+          Some(denom) =>
+            if denom == 0.0 {
+              raise ParseError("Division by zero in LP quadratic objective")
+            } else {
+              scale = outer_sign / denom
+              i = i + 2
+            }
+          None =>
+            raise ParseError(
+              "Invalid divisor after '/' in LP quadratic objective: " +
+              tokens[i + 1],
+            )
+        }
+      }
+      parse_quad_tokens(q_tokens, model, name_to_id, scale)
+    } else {
+      lin_tokens.push(tok)
+      i = i + 1
+    }
+  }
+  if lin_tokens.length() > 0 {
+    let (terms, obj_c) = parse_linear_tokens(
+      lin_tokens,
+      0,
+      lin_tokens.length(),
+      model,
+      name_to_id,
+      allow_const=true,
+    )
+    if obj_c != 0.0 {
+      model.set_obj_constant(model.obj_constant + obj_c)
+    }
+    for k = 0; k < terms.length(); k = k + 1 {
+      let t = terms[k]
+      let old = model.vars[t.var_id.index]
+      model.vars[t.var_id.index] = { ..old, obj: old.obj + t.coeff, }
+    }
+  }
+}
+
+///|
+/// Parse standard CPLEX `.lp` text (LP/MILP/QP/MIQP) into a `Model`.
 pub fn parse_lp(text : String) -> Model raise ParseError {
   let lines = split_lines(text)
   let model = Model::new(Minimize)
@@ -515,6 +722,9 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
   let mut section : LpSection = None
   let mut has_sense = false
   let mut auto_cname = 0
+  let obj_all_tokens : Array[String] = []
+  let mut obj_header_stripped = false
+  let mut obj_parsed = false
 
   for li = 0; li < lines.length(); li = li + 1 {
     let clean = strip_comment_and_trim(lines[li])
@@ -537,10 +747,18 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
       continue
     }
     if low == "subject to" || low == "s.t." || low == "st" || low == "such that" {
+      if !obj_parsed && obj_all_tokens.length() > 0 {
+        parse_objective_tokens(obj_all_tokens, model, name_to_id)
+        obj_parsed = true
+      }
       section = SubjectTo
       continue
     }
     if low == "bounds" || low == "bound" {
+      if !obj_parsed && obj_all_tokens.length() > 0 {
+        parse_objective_tokens(obj_all_tokens, model, name_to_id)
+        obj_parsed = true
+      }
       section = Bounds
       continue
     }
@@ -548,10 +766,18 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
       low == "general" ||
       low == "gen" ||
       low == "integers" {
+      if !obj_parsed && obj_all_tokens.length() > 0 {
+        parse_objective_tokens(obj_all_tokens, model, name_to_id)
+        obj_parsed = true
+      }
       section = Generals
       continue
     }
     if low == "binaries" || low == "binary" || low == "bin" {
+      if !obj_parsed && obj_all_tokens.length() > 0 {
+        parse_objective_tokens(obj_all_tokens, model, name_to_id)
+        obj_parsed = true
+      }
       section = Binaries
       continue
     }
@@ -570,22 +796,17 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
           "Unexpected content before Minimize/Maximize: " + clean,
         )
       Objective => {
-        let start = if tokens.length() >= 2 && tokens[1] == ":" { 2 } else { 0 }
-        let (terms, obj_c) = parse_linear_tokens(
-          tokens,
-          start,
-          tokens.length(),
-          model,
-          name_to_id,
-          allow_const=true,
-        )
-        if obj_c != 0.0 {
-          model.set_obj_constant(model.obj_constant + obj_c)
+        let start = if !obj_header_stripped &&
+          tokens.length() >= 2 &&
+          tokens[1] == ":" {
+          obj_header_stripped = true
+          2
+        } else {
+          obj_header_stripped = true
+          0
         }
-        for i = 0; i < terms.length(); i = i + 1 {
-          let t = terms[i]
-          let old = model.vars[t.var_id.index]
-          model.vars[t.var_id.index] = { ..old, obj: old.obj + t.coeff, }
+        for k = start; k < tokens.length(); k = k + 1 {
+          obj_all_tokens.push(tokens[k])
         }
       }
       SubjectTo => {
@@ -722,6 +943,9 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
     }
   }
 
+  if !obj_parsed && obj_all_tokens.length() > 0 {
+    parse_objective_tokens(obj_all_tokens, model, name_to_id)
+  }
   if !has_sense {
     raise ParseError("LP input missing Minimize/Maximize section")
   }

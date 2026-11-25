@@ -61,3 +61,36 @@ test "bench 5-city TSP-MTZ: unified Branch-and-Cut" (b : @bench.T) {
   let m = build_tsp5_mtz_model()
   b.bench(fn() { b.keep(solve_milp_branch_and_cut(m).0.objective) })
 }
+
+///|
+test "bench Markowitz 6-asset portfolio QP (Primal-Dual IPM)" (b : @bench.T) {
+  let m = build_markowitz_portfolio_qp(target_return=0.08)
+  b.bench(fn() { b.keep(solve_qp(m).objective) })
+}
+
+///|
+test "bench Cardinality-constrained Markowitz MIQP (max 3 of 6 assets)" (
+  b : @bench.T,
+) {
+  let m = build_cardinality_portfolio_miqp(
+    max_assets=3,
+    min_weight=0.1,
+    max_weight=0.5,
+    target_return=0.08,
+  )
+  b.bench(fn() { b.keep(solve_miqp(m).objective) })
+}
+
+///|
+test "bench Constrained Linear MPC QP (8-step horizon, 24 vars, 16 eqs)" (
+  b : @bench.T,
+) {
+  let m = build_linear_mpc_qp(horizon=8, x0_pos=2.0, x0_vel=0.0, u_max=1.0)
+  b.bench(fn() { b.keep(solve_qp(m).objective) })
+}
+
+///|
+test "bench Soft-Margin SVM Dual QP (8x8 rank-2 PSD)" (b : @bench.T) {
+  let m = build_svm_dual_qp(c_reg=10.0)
+  b.bench(fn() { b.keep(solve_qp(m).objective) })
+}

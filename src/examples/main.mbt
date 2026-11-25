@@ -6,7 +6,9 @@
 
 ///|
 fn main {
-  println("=== moonlp: Pure MoonBit LP/MILP Optimization Solver Demo ===\n")
+  println(
+    "=== moonlp v1.0.0: Pure MoonBit QP / MIQP / LP / MILP Optimization Solver Demo ===\n",
+  )
 
   // 1. Production Planning LP + KKT Strong Duality Certificate
   let m = @moonlp.Model::new(Maximize)
@@ -182,5 +184,87 @@ fn main {
   println("\n[6] 5-City TSP (MTZ Subtour Elimination MILP, 20 binary + 4 continuous vars)")
   println(
     "    Optimum Tour = \{tsp_warm.objective} | Cold B&B pivots=\{tsp_cold.iterations} vs Dual Warm-Start pivots=\{tsp_warm.iterations}",
+  )
+
+  // 7. Markowitz 6-Asset Mean-Variance Portfolio (Continuous Convex QP) vs
+  //    Cardinality-Constrained Portfolio Selection (Mixed-Integer QP, MIQP)
+  let mk_qp = @moonlp.build_markowitz_portfolio_qp(target_return=0.08)
+  let mk_qsol = mk_qp.solve()
+  let mk_qcert = mk_qp.certify_qp_solution(mk_qsol)
+  println(
+    "\n[7] Markowitz 6-Asset Mean-Variance Portfolio (Convex QP, target return >= 8%)",
+  )
+  println(
+    "    Min 0.5*w^T*Sigma*w = \{mk_qsol.objective} | IPM iters=\{mk_qsol.iterations} | Wolfe KKT Certified=\{mk_qcert.certified_optimal} (gap=\{mk_qcert.duality_gap})",
+  )
+  let names = ["US_Eq", "Intl_Eq", "Corp_Bond", "Gov_Bond", "REIT", "Gold"]
+  let q_weights = StringBuilder()
+  for i = 0; i < 6; i = i + 1 {
+    if i > 0 {
+      q_weights.write_string(", ")
+    }
+    q_weights.write_string(names[i])
+    q_weights.write_string("=")
+    q_weights.write_string(mk_qsol.primal[i].to_string())
+  }
+  println("    Weights = [\{q_weights.to_string()}]")
+
+  let mk_miqp = @moonlp.build_cardinality_portfolio_miqp(
+    max_assets=3,
+    min_weight=0.1,
+    max_weight=0.5,
+    target_return=0.08,
+  )
+  let mk_msol = mk_miqp.solve()
+  let picked = StringBuilder()
+  for i = 0; i < 6; i = i + 1 {
+    if mk_msol.primal[6 + i] > 0.5 {
+      if picked.to_string().length() > 0 {
+        picked.write_string(", ")
+      }
+      picked.write_string(names[i])
+      picked.write_string("=")
+      picked.write_string(mk_msol.primal[i].to_string())
+    }
+  }
+  println(
+    "\n[8] Cardinality-Constrained Markowitz Portfolio (MIQP: max 3 of 6 assets, min hold 10%)",
+  )
+  println(
+    "    Global Optimal 0.5*w^T*Sigma*w = \{mk_msol.objective} (vs QP relaxation \{mk_qsol.objective}) | B&B nodes=\{mk_msol.nodes_explored} | mip_gap=\{mk_msol.mip_gap}",
+  )
+  println("    Selected 3 Assets = [\{picked.to_string()}]")
+
+  // 9. Constrained Linear Model Predictive Control (MPC Trajectory Tracking QP)
+  let mpc = @moonlp.build_linear_mpc_qp(
+    horizon=8,
+    x0_pos=2.0,
+    x0_vel=0.0,
+    u_max=1.0,
+  )
+  let mpc_sol = mpc.solve()
+  let mpc_cert = mpc.certify_qp_solution(mpc_sol)
+  println(
+    "\n[9] Constrained Linear MPC Trajectory Tracking (8-step horizon, 24 vars, 16 dynamics eqs)",
+  )
+  println(
+    "    LQR Cost = \{mpc_sol.objective} | u_0 = \{mpc_sol.primal[16]} (saturated at -1.0) | p_8 = \{mpc_sol.primal[14]} | KKT=\{mpc_cert.certified_optimal}",
+  )
+
+  // 10. Soft-Margin SVM Dual Training (Rank-2 PSD 8x8 Gram Matrix QP)
+  let svm = @moonlp.build_svm_dual_qp(c_reg=10.0)
+  let svm_sol = svm.solve()
+  let svm_cert = svm.certify_qp_solution(svm_sol)
+  let mut sv_count = 0
+  for i = 0; i < 8; i = i + 1 {
+    if svm_sol.primal[i] > 1.0e-4 {
+      sv_count = sv_count + 1
+    }
+  }
+  println(
+    "\n[10] Soft-Margin SVM Dual Training (8x8 Rank-2 PSD Gram Matrix QP)",
+  )
+  println(
+    "     Dual Objective = \{svm_sol.objective} | Support Vectors = \{sv_count} | IPM iters=\{svm_sol.iterations} | KKT=\{svm_cert.certified_optimal}",
   )
 }

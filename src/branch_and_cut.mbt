@@ -481,7 +481,7 @@ pub fn solve_milp_branch_and_cut(
     }
   }
   let (p2_st, p2_it) = run_simplex_phase(
-    tab, basis, col_active, m, num_cols, config,
+    tab, basis, col_active, m, num_cols, config, costs=std_obj,
   )
   total_pivots = total_pivots + p2_it
   if p2_st == Unbounded {
@@ -669,6 +669,7 @@ pub fn solve_milp_branch_and_cut(
   let mut heuristic_hits = 0
   let mut hit_max_iters = false
   let mut has_unproved = false
+  let mut retry_without_cuts = false
 
   while stack.length() > 0 && nodes_explored < config.max_nodes {
     let node = pop_hybrid_bc_node(stack, best_sol is Some(_), nodes_explored)
@@ -778,6 +779,12 @@ pub fn solve_milp_branch_and_cut(
           }
         }
         if branch_row == -1 {
+          // A weakened cut may leave a gap too small for another warm pivot.
+          // Re-prove the original model with a fresh tree and the remaining budget.
+          if cuts_added > 0 && nodes_explored < config.max_nodes {
+            retry_without_cuts = true
+            break
+          }
           has_unproved = true
         }
       }
@@ -837,6 +844,16 @@ pub fn solve_milp_branch_and_cut(
     total_pivots,
   }
 
+  if retry_without_cuts {
+    let remaining = { ..config, max_nodes: config.max_nodes - nodes_explored, }
+    let cold = solve_milp_core(model, remaining, true, incumbent?=best_sol)
+    let nodes = nodes_explored + cold.nodes_explored
+    let pivots = total_pivots + cold.iterations
+    return (
+      { ..cold, nodes_explored: nodes, iterations: pivots, },
+      { ..stats, nodes_explored: nodes, total_pivots: pivots, },
+    )
+  }
   match best_sol {
     Some(sol) =>
       if stack.length() == 0 && !has_unproved {
