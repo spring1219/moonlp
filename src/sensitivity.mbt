@@ -122,6 +122,7 @@ pub fn Model::rhs_perturbation_delta(
     constraints: new_constraints,
     obj_constant: self.obj_constant,
     quad_terms: self.quad_terms,
+    soc_constraints: self.soc_constraints,
   }
   let new_sol = perturbed.solve(config~)
   if new_sol.status != Optimal {

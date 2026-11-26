@@ -118,3 +118,37 @@ test "bench Hybrid Switched-Thruster Deadzone MPC MIQP (5-step, <=3 firings)" (
   let m = build_hybrid_mpc_miqp(horizon=5, max_firings=3)
   b.bench(fn() { b.keep(solve_miqp(m).objective) })
 }
+
+///|
+test "bench Smallest Enclosing Disk SOCP (6 Lorentz cones)" (b : @bench.T) {
+  let m = build_smallest_enclosing_disk_socp()
+  b.bench(fn() { b.keep(solve_socp(m).objective) })
+}
+
+///|
+test "bench Robust Ellipsoidal Portfolio SOCP (6-asset cone)" (b : @bench.T) {
+  let m = build_robust_portfolio_socp(kappa=1.5)
+  b.bench(fn() { b.keep(solve_socp(m).objective) })
+}
+
+///|
+test "bench Volatility-Capped Cardinality Portfolio MISOCP (max 3 assets, vol<=10.5%)" (
+  b : @bench.T,
+) {
+  let m = build_vol_capped_cardinality_misocp(max_assets=3, vol_cap=0.105)
+  b.bench(fn() { b.keep(solve_misocp(m).objective) })
+}
+
+///|
+test "bench 95% Gaussian Chance-Constrained Planning SOCP" (b : @bench.T) {
+  let m = build_chance_constrained_socp(z_alpha=1.644854)
+  b.bench(fn() { b.keep(solve_socp(m).objective) })
+}
+
+///|
+test "bench 2D Isotropic Circular-Thrust Rocket Guidance SOCP (4-step)" (
+  b : @bench.T,
+) {
+  let m = build_isotropic_thrust_mpc_socp(horizon=4, u_max=1.0)
+  b.bench(fn() { b.keep(solve_socp(m).objective) })
+}

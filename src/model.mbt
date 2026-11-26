@@ -1,5 +1,5 @@
 ///|
-/// Algebraic LP/MILP/QP/MIQP Model builder and solution verifier.
+/// Algebraic LP/MILP/QP/MIQP/SOCP/MISOCP Model builder and solution verifier.
 
 ///|
 #derive(Debug)
@@ -9,11 +9,19 @@ pub struct Model {
   constraints : Array[Constraint]
   mut obj_constant : Double
   quad_terms : Array[QuadTerm]
+  soc_constraints : Array[SocConstraint]
 }
 
 ///|
 pub fn Model::new(sense : Sense) -> Model {
-  { sense, vars: [], constraints: [], obj_constant: 0.0, quad_terms: [], }
+  {
+    sense,
+    vars: [],
+    constraints: [],
+    obj_constant: 0.0,
+    quad_terms: [],
+    soc_constraints: [],
+  }
 }
 
 ///|
@@ -268,6 +276,186 @@ pub fn Model::eval_objective(self : Model, x : Array[Double]) -> Double {
 }
 
 ///|
+/// Pivoted Cholesky factorization of a symmetric positive semi-definite matrix P:
+/// returns `Some(rows)` such that `P = sum_k rows[k] * rows[k]^T` (with rank <= n),
+/// or `None` if P has a materially negative eigenvalue (non-convex).
+fn psd_factor_rows(
+  p_mat : Array[Array[Double]],
+  n : Int32,
+) -> Array[Array[Double]]? {
+  if n <= 0 {
+    return Some([])
+  }
+  let a : Array[Array[Double]] = []
+  let mut max_abs = 0.0
+  for i = 0; i < n; i = i + 1 {
+    let row = Array::make(n, 0.0)
+    for j = 0; j < n; j = j + 1 {
+      let pij = if i < p_mat.length() && j < p_mat[i].length() {
+        p_mat[i][j]
+      } else {
+        0.0
+      }
+      let pji = if j < p_mat.length() && i < p_mat[j].length() {
+        p_mat[j][i]
+      } else {
+        0.0
+      }
+      let sym = 0.5 * (pij + pji)
+      if !is_finite_double(sym) {
+        return None
+      }
+      row[j] = sym
+      if sym.abs() > max_abs {
+        max_abs = sym.abs()
+      }
+    }
+    a.push(row)
+  }
+  if max_abs == 0.0 {
+    return Some([])
+  }
+  let neg_tol = 1.0e-9 * (1.0 + max_abs)
+  let zero_tol = 1.0e-13 * (1.0 + max_abs)
+  let rows : Array[Array[Double]] = []
+  for _step = 0; _step < n; _step = _step + 1 {
+    let mut piv = -1
+    let mut best_d = -1.0e308
+    for i = 0; i < n; i = i + 1 {
+      let d = a[i][i]
+      if d < -neg_tol {
+        return None
+      }
+      if d > best_d {
+        best_d = d
+        piv = i
+      }
+    }
+    if piv == -1 || best_d <= zero_tol {
+      // Verify no large residual off-diagonals remain (which would imply indefiniteness)
+      for i = 0; i < n; i = i + 1 {
+        for j = i + 1; j < n; j = j + 1 {
+          if a[i][j].abs() > neg_tol {
+            return None
+          }
+        }
+      }
+      break
+    }
+    let root = d_sqrt(best_d)
+    let r = Array::make(n, 0.0)
+    for j = 0; j < n; j = j + 1 {
+      r[j] = a[piv][j] / root
+    }
+    rows.push(r)
+    for i = 0; i < n; i = i + 1 {
+      let ri = r[i]
+      if ri != 0.0 {
+        let row_i = a[i]
+        for j = 0; j < n; j = j + 1 {
+          row_i[j] = row_i[j] - ri * r[j]
+        }
+      }
+    }
+  }
+  Some(rows)
+}
+
+///|
+/// Evaluate an affine LinearExpr at primal point `x`.
+fn eval_linear_expr(expr : LinearExpr, x : Array[Double]) -> Double {
+  let mut v = expr.constant
+  for k = 0; k < expr.terms.length(); k = k + 1 {
+    let t = expr.terms[k]
+    v = v + t.coeff * x[t.var_id.index]
+  }
+  v
+}
+
+///|
+/// Add a Second-Order Cone (Lorentz) constraint:
+///   || [norm_exprs[0](x), ..., norm_exprs[k-1](x)] ||_2 <= rhs_expr(x)
+pub fn Model::add_soc_constraint(
+  self : Model,
+  name : String,
+  norm_exprs : Array[LinearExpr],
+  rhs_expr : LinearExpr,
+) -> Unit {
+  self.soc_constraints.push({ name, norm_exprs, rhs_expr, })
+}
+
+///|
+/// Add a convex quadratic constraint (QCQP) over `vars`:
+///   - `half = true` (default): `0.5 * x_sub^T P x_sub + lin_expr(x) <= rhs`
+///   - `half = false`:          `x_sub^T P x_sub + lin_expr(x) <= rhs`
+/// Automatically factors PSD `P` via pivoted Cholesky and lifts into an exact
+/// Second-Order Cone constraint. Returns `false` if `P` is not positive semi-definite.
+pub fn Model::add_quad_constraint(
+  self : Model,
+  name : String,
+  vars : Array[VarId],
+  p_mat : Array[Array[Double]],
+  lin_expr : LinearExpr,
+  rhs : Double,
+  half~ : Bool = true,
+) -> Bool {
+  let k = vars.length()
+  let scaled_p : Array[Array[Double]] = []
+  let factor = if half { 1.0 } else { 2.0 }
+  for i = 0; i < k; i = i + 1 {
+    let row = Array::make(k, 0.0)
+    for j = 0; j < k; j = j + 1 {
+      let pij = if i < p_mat.length() && j < p_mat[i].length() {
+        p_mat[i][j]
+      } else {
+        0.0
+      }
+      row[j] = factor * pij
+    }
+    scaled_p.push(row)
+  }
+  match psd_factor_rows(scaled_p, k) {
+    None => false
+    Some(frows) => {
+      if frows.length() == 0 {
+        self.add_expr_constraint(name, lin_expr, Le, rhs)
+        return true
+      }
+      // 0.5 * ||L^T x||^2 + u <= 0  <=>  || [L^T x, u + 0.5] ||_2 <= 0.5 - u
+      // where u(x) = lin_expr(x) - rhs
+      let norm_exprs : Array[LinearExpr] = []
+      for r = 0; r < frows.length(); r = r + 1 {
+        let e = LinearExpr::zero()
+        let fr = frows[r]
+        for j = 0; j < k; j = j + 1 {
+          if fr[j] != 0.0 {
+            let _ = e.add_term(vars[j], fr[j])
+          }
+        }
+        norm_exprs.push(e)
+      }
+      let u_plus_half = LinearExpr::zero()
+        .add_expr(lin_expr)
+        .add_const(0.5 - rhs)
+      norm_exprs.push(u_plus_half)
+      let half_minus_u = lin_expr.scale(-1.0).add_const(0.5 + rhs)
+      self.add_soc_constraint(name, norm_exprs, half_minus_u)
+      true
+    }
+  }
+}
+
+///|
+pub fn Model::has_soc_constraints(self : Model) -> Bool {
+  self.soc_constraints.length() > 0
+}
+
+///|
+pub fn Model::num_soc_constraints(self : Model) -> Int32 {
+  self.soc_constraints.length()
+}
+
+///|
 pub fn Model::has_integer_vars(self : Model) -> Bool {
   for i = 0; i < self.vars.length(); i = i + 1 {
     match self.vars[i].kind {
@@ -296,6 +484,7 @@ pub fn Model::clone_with_bounds(
     constraints: self.constraints,
     obj_constant: self.obj_constant,
     quad_terms: self.quad_terms,
+    soc_constraints: self.soc_constraints,
   }
 }
 
@@ -368,6 +557,26 @@ pub fn Model::verify_solution(
       Le => if lhs > c.rhs + tol { return false }
       Ge => if lhs < c.rhs - tol { return false }
       Eq => if (lhs - c.rhs).abs() > tol { return false }
+    }
+  }
+  // Verify Second-Order Cone constraints: ||norm_exprs(x)||_2 <= rhs_expr(x)
+  for s_idx = 0; s_idx < self.soc_constraints.length(); s_idx = s_idx + 1 {
+    let sc = self.soc_constraints[s_idx]
+    let rhs_v = eval_linear_expr(sc.rhs_expr, sol.primal)
+    if !is_finite_double(rhs_v) {
+      return false
+    }
+    let mut sum_sq = 0.0
+    for k = 0; k < sc.norm_exprs.length(); k = k + 1 {
+      let ek = eval_linear_expr(sc.norm_exprs[k], sol.primal)
+      if !is_finite_double(ek) {
+        return false
+      }
+      sum_sq = sum_sq + ek * ek
+    }
+    let nrm = d_sqrt(sum_sq)
+    if !is_finite_double(nrm) || rhs_v < -tol || nrm > rhs_v + tol {
+      return false
     }
   }
   true
@@ -447,19 +656,55 @@ fn Model::max_lp_violation(
       max_v = viol
     }
   }
+  for s_idx = 0; s_idx < self.soc_constraints.length(); s_idx = s_idx + 1 {
+    let sc = self.soc_constraints[s_idx]
+    let rhs_v = eval_linear_expr(sc.rhs_expr, sol.primal)
+    if !is_finite_double(rhs_v) {
+      return 1.0e300
+    }
+    let mut sum_sq = 0.0
+    for k = 0; k < sc.norm_exprs.length(); k = k + 1 {
+      let ek = eval_linear_expr(sc.norm_exprs[k], sol.primal)
+      if !is_finite_double(ek) {
+        return 1.0e300
+      }
+      sum_sq = sum_sq + ek * ek
+    }
+    let nrm = d_sqrt(sum_sq)
+    if !is_finite_double(nrm) {
+      return 1.0e300
+    }
+    let cv = if nrm > rhs_v { nrm - rhs_v } else { 0.0 }
+    if cv > max_v {
+      max_v = cv
+    }
+    if -rhs_v > max_v {
+      max_v = -rhs_v
+    }
+  }
   max_v
 }
 
 ///|
-/// High-level entry point: automatically dispatches to LP Simplex, MILP Branch-and-Bound,
-/// Convex QP Primal-Dual Interior-Point, or MIQP Branch-and-Bound.
+/// High-level entry point: automatically dispatches across all 6 optimization classes:
+///   - LP (Two-Phase Primal Simplex + Ruiz Scaling)
+///   - MILP (Best-Bound Branch-and-Bound)
+///   - Convex QP (Scale-Normalized Mehrotra Primal-Dual IPM)
+///   - MIQP (Branch-and-Bound over Convex QP relaxations)
+///   - SOCP / QCQP (Nesterov-Todd Primal-Dual Conic IPM)
+///   - MISOCP / MIQCQP (Branch-and-Bound over SOCP relaxations)
 pub fn Model::solve(
   self : Model,
   config~ : SolverConfig = SolverConfig::default(),
 ) -> Solution {
+  let has_s = self.has_soc_constraints()
   let has_q = self.has_quad_obj()
   let has_i = self.has_integer_vars()
-  if has_q && has_i {
+  if has_s && has_i {
+    solve_misocp(self, config~)
+  } else if has_s {
+    solve_socp(self, config~)
+  } else if has_q && has_i {
     solve_miqp(self, config~)
   } else if has_q {
     solve_qp(self, config~)

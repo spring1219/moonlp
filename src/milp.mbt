@@ -128,6 +128,7 @@ fn make_zero_obj_model(model : Model) -> Model {
     constraints: model.constraints,
     obj_constant: 0.0,
     quad_terms: [],
+    soc_constraints: [],
   }
 }
 

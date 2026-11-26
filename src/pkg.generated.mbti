@@ -10,19 +10,31 @@ pub fn build_best_subset_ridge_miqp(max_features? : Int32, ridge_lambda? : Doubl
 
 pub fn build_cardinality_portfolio_miqp(max_assets? : Int32, min_weight? : Double, max_weight? : Double, target_return? : Double) -> Model
 
+pub fn build_chance_constrained_socp(z_alpha? : Double) -> Model
+
 pub fn build_constrained_lsq_qp() -> Model
 
 pub fn build_hybrid_mpc_miqp(horizon? : Int32, max_firings? : Int32, x0_pos? : Double, x0_vel? : Double, u_min? : Double, u_max? : Double) -> Model
+
+pub fn build_isotropic_thrust_mpc_socp(horizon? : Int32, u_max? : Double) -> Model
 
 pub fn build_linear_mpc_qp(horizon? : Int32, x0_pos? : Double, x0_vel? : Double, u_max? : Double, v_max? : Double) -> Model
 
 pub fn build_markowitz_portfolio_qp(target_return? : Double, max_weight? : Double) -> Model
 
+pub fn build_robust_portfolio_socp(kappa? : Double, max_weight? : Double) -> Model
+
+pub fn build_smallest_enclosing_disk_socp() -> Model
+
 pub fn build_svm_dual_qp(c_reg? : Double) -> Model
+
+pub fn build_switched_isotropic_mpc_misocp(horizon? : Int32, max_burns? : Int32, u_max? : Double) -> Model
 
 pub fn build_tsp5_mtz_model() -> Model
 
 pub fn build_unit_commitment_miqp(demand? : Double, reserve? : Double) -> Model
+
+pub fn build_vol_capped_cardinality_misocp(max_assets? : Int32, vol_cap? : Double, min_weight? : Double, max_weight? : Double) -> Model
 
 pub fn highs_avgas_mps() -> String
 
@@ -52,7 +64,11 @@ pub fn solve_milp_with_cuts(Model, max_cuts? : Int32, config? : SolverConfig) ->
 
 pub fn solve_miqp(Model, config? : SolverConfig) -> Solution
 
+pub fn solve_misocp(Model, config? : SolverConfig) -> Solution
+
 pub fn solve_qp(Model, config? : SolverConfig) -> Solution
+
+pub fn solve_socp(Model, config? : SolverConfig) -> Solution
 
 // Errors
 #derive(Eq, @debug.Debug)
@@ -119,13 +135,16 @@ pub struct Model {
   constraints : Array[Constraint]
   mut obj_constant : Double
   quad_terms : Array[QuadTerm]
+  soc_constraints : Array[SocConstraint]
 }
 pub fn Model::add_binary_var(Self, String, obj? : Double) -> VarId
 pub fn Model::add_constraint(Self, String, Array[Term], Relation, Double) -> Unit
 pub fn Model::add_continuous_var(Self, String, lb? : Double, ub? : Double, obj? : Double) -> VarId
 pub fn Model::add_expr_constraint(Self, String, LinearExpr, Relation, Double) -> Unit
 pub fn Model::add_int_var(Self, String, lb? : Double, ub? : Double, obj? : Double) -> VarId
+pub fn Model::add_quad_constraint(Self, String, Array[VarId], Array[Array[Double]], LinearExpr, Double, half? : Bool) -> Bool
 pub fn Model::add_quad_obj_term(Self, VarId, VarId, Double) -> Unit
+pub fn Model::add_soc_constraint(Self, String, Array[LinearExpr], LinearExpr) -> Unit
 pub fn Model::add_var(Self, String, lb? : Double, ub? : Double, kind? : VarKind, obj? : Double) -> VarId
 pub fn Model::analyze_constraints(Self, Solution, tol? : Double) -> Array[ConstraintSensitivity]
 pub fn Model::analyze_variables(Self, Solution, tol? : Double) -> Array[VarSensitivity]
@@ -136,9 +155,11 @@ pub fn Model::clone_with_bounds(Self, Array[Double], Array[Double]) -> Self
 pub fn Model::eval_objective(Self, Array[Double]) -> Double
 pub fn Model::has_integer_vars(Self) -> Bool
 pub fn Model::has_quad_obj(Self) -> Bool
+pub fn Model::has_soc_constraints(Self) -> Bool
 pub fn Model::matrix_scale_ratio(Self) -> Double
 pub fn Model::new(Sense) -> Self
 pub fn Model::num_constraints(Self) -> Int32
+pub fn Model::num_soc_constraints(Self) -> Int32
 pub fn Model::num_vars(Self) -> Int32
 pub fn Model::presolve(Self, tol? : Double) -> (Self, PresolveReport)
 pub fn Model::rhs_perturbation_delta(Self, Solution, Int32, Double, config? : SolverConfig) -> Double?
@@ -152,6 +173,7 @@ pub fn Model::set_var_obj(Self, VarId, Double) -> Unit
 pub fn Model::solve(Self, config? : SolverConfig) -> Solution
 pub fn Model::solve_presolved(Self, config? : SolverConfig) -> Solution
 pub fn Model::solve_scaled(Self, passes? : Int32, config? : SolverConfig) -> (Solution, ScalingReport)
+pub fn Model::solve_socp_certified(Self, config? : SolverConfig, cert_tol? : Double) -> (Solution, SocpCertificate)
 pub fn Model::to_lp_string(Self) -> String
 pub fn Model::to_mps_string(Self, name? : String) -> String
 pub fn Model::verify_solution(Self, Solution, tol? : Double) -> Bool
@@ -203,6 +225,26 @@ pub(all) struct ScalingReport {
 pub(all) enum Sense {
   Minimize
   Maximize
+}
+
+#derive(@debug.Debug)
+pub(all) struct SocConstraint {
+  name : String
+  norm_exprs : Array[LinearExpr]
+  rhs_expr : LinearExpr
+}
+
+#derive(@debug.Debug)
+pub(all) struct SocpCertificate {
+  primal_feasible : Bool
+  dual_conic_feasible : Bool
+  max_primal_violation : Double
+  max_cone_violation : Double
+  max_dual_violation : Double
+  duality_gap : Double
+  primal_objective : Double
+  dual_objective : Double
+  certified_optimal : Bool
 }
 
 #derive(@debug.Debug)

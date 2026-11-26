@@ -180,6 +180,7 @@ fn Model::presolve_with_map(
       constraints: kept_constraints,
       obj_constant: self.obj_constant,
       quad_terms: self.quad_terms,
+      soc_constraints: self.soc_constraints,
     },
     {
       bounds_tightened: tightened,
@@ -220,6 +221,7 @@ pub fn Model::solve_presolved(
   if rsol.status != Optimal ||
     self.has_integer_vars() ||
     self.has_quad_obj() ||
+    self.has_soc_constraints() ||
     rsol.dual.length() != kept_orig_indices.length() {
     return rsol
   }

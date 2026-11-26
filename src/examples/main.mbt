@@ -7,7 +7,7 @@
 ///|
 fn main {
   println(
-    "=== moonlp v1.0.0: Pure MoonBit QP / MIQP / LP / MILP Optimization Solver Demo ===\n",
+    "=== moonlp v2.0.0: Pure MoonBit SOCP / MISOCP / QCQP / MIQP / QP / LP / MILP Solver Demo ===\n",
   )
 
   // 1. Production Planning LP + KKT Strong Duality Certificate
@@ -334,5 +334,72 @@ fn main {
   )
   println(
     "     Min Hybrid Cost = \{hmpc_sol.objective} | B&B nodes=\{hmpc_sol.nodes_explored} | Thruster = [\{fire_str.to_string()}]",
+  )
+
+  // 14. Smallest Enclosing Disk / 5G Base Station Coverage (SOCP)
+  let disk = @moonlp.build_smallest_enclosing_disk_socp()
+  let (dsol, dcert) = disk.solve_socp_certified()
+  println("\n[14] Smallest Enclosing Disk / 5G Coverage Radius (SOCP, 6 Lorentz cones)")
+  println(
+    "     Min Radius = \{dsol.objective} | Center = (\{dsol.primal[0]}, \{dsol.primal[1]}) | Conic KKT=\{dcert.certified_optimal} (gap=\{dcert.duality_gap})",
+  )
+
+  // 15. Robust Ellipsoidal-Uncertainty Portfolio (SOCP)
+  let rport = @moonlp.build_robust_portfolio_socp(kappa=1.5, max_weight=0.5)
+  let (rpsol, rpcert) = rport.solve_socp_certified()
+  println("\n[15] Robust Portfolio under Ellipsoidal Return Uncertainty (SOCP, kappa=1.5)")
+  println(
+    "     Max Worst-Case Return = \{rpsol.objective} | Risk ||Sigma^0.5 w||_2 = \{rpsol.primal[6]} | Conic KKT=\{rpcert.certified_optimal}",
+  )
+
+  // 16. Volatility-Capped Cardinality-Constrained Portfolio (MISOCP / MIQCQP)
+  let vmisocp = @moonlp.build_vol_capped_cardinality_misocp(
+    max_assets=3,
+    vol_cap=0.105,
+    min_weight=0.1,
+    max_weight=0.5,
+  )
+  let vsol = vmisocp.solve()
+  let vpick = StringBuilder()
+  for i = 0; i < 6; i = i + 1 {
+    if vsol.primal[6 + i] > 0.5 {
+      if vpick.to_string().length() > 0 {
+        vpick.write_string(", ")
+      }
+      vpick.write_string(names[i])
+      vpick.write_string("=")
+      vpick.write_string(vsol.primal[i].to_string())
+    }
+  }
+  println(
+    "\n[16] Volatility-Capped Cardinality Portfolio (MISOCP: max 3 assets, vol <= 10.5%)",
+  )
+  println(
+    "     Max Return = \{vsol.objective} | B&B nodes=\{vsol.nodes_explored} | mip_gap=\{vsol.mip_gap}",
+  )
+  println("     Selected 3 Assets = [\{vpick.to_string()}]")
+
+  // 17. 95% Gaussian Chance-Constrained Production Planning (SOCP)
+  let cc = @moonlp.build_chance_constrained_socp(z_alpha=1.644854)
+  let (ccsol, cccert) = cc.solve_socp_certified()
+  println("\n[17] 95% Gaussian Chance-Constrained Production Planning (SOCP)")
+  println(
+    "     Max Safe Profit = \{ccsol.objective} | x = (\{ccsol.primal[0]}, \{ccsol.primal[1]}, \{ccsol.primal[2]}) | Conic KKT=\{cccert.certified_optimal}",
+  )
+
+  // 18. 2D Isotropic Circular-Thrust Rocket Guidance (SOCP & Switched 2-Burn MISOCP)
+  let r_cont = @moonlp.build_isotropic_thrust_mpc_socp(horizon=4, u_max=1.0)
+  let r_csol = r_cont.solve()
+  let r_sw = @moonlp.build_switched_isotropic_mpc_misocp(
+    horizon=4,
+    max_burns=2,
+    u_max=1.0,
+  )
+  let r_ssol = r_sw.solve()
+  println(
+    "\n[18] 2D Isotropic Circular-Thrust Rocket Guidance (SOCP vs 2-Burn Switched MISOCP)",
+  )
+  println(
+    "     Continuous 4-step SOCP Cost = \{r_csol.objective} | Switched <=2-Burn MISOCP Cost = \{r_ssol.objective} (B&B nodes=\{r_ssol.nodes_explored})",
   )
 }

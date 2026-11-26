@@ -1,6 +1,6 @@
 ///|
-/// Core types for moonlp: Linear, Mixed-Integer Linear, Convex Quadratic (QP),
-/// and Mixed-Integer Quadratic Programming (MIQP).
+/// Core types for moonlp: Second-Order Cone (SOCP / MISOCP), Convex Quadratic (QP / MIQP / QCQP),
+/// and Linear / Mixed-Integer Linear Programming (LP / MILP).
 
 ///|
 #derive(Debug, Eq)
@@ -60,6 +60,17 @@ pub(all) struct QuadTerm {
   var1 : VarId
   var2 : VarId
   coeff : Double
+}
+
+///|
+/// Second-Order Cone (Lorentz / Ice-Cream Cone) constraint:
+///   || [norm_exprs[0](x), ..., norm_exprs[k-1](x)] ||_2 <= rhs_expr(x)
+/// where each expression is affine (`sum coeff_j x_j + constant`).
+#derive(Debug)
+pub(all) struct SocConstraint {
+  name : String
+  norm_exprs : Array[LinearExpr]
+  rhs_expr : LinearExpr
 }
 
 ///|

@@ -193,6 +193,7 @@ fn Model::ruiz_scale_core(
     constraints: scaled_constraints,
     obj_constant: self.obj_constant,
     quad_terms: [],
+    soc_constraints: [],
   }
   let scaled_ratio = scaled_model.matrix_scale_ratio()
   (
