@@ -1,4 +1,4 @@
-# `spring1219/moonlp` v2.0.0 全生态排重对比、实质差异与新增模型验证报告
+# `spring1219/moonlp` v1.1.0 全生态排重对比、实质差异与新增模型验证报告
 
 ## 1. MoonBit 生态已有优化项目全面排重（截至 2026-11-26）
 
@@ -11,15 +11,15 @@
 | **`Luna-Flow/linear-program`** | 2026-11-12 | 轻量级 LP 建模与基础求解 | 无 MILP / QP / MIQP / SOCP |
 | **`paipai-Studio/BlackBoxOptimization`** | 2026-11-12 | 黑盒元启发式 / 群智能优化 | 无精确数学规划、无约束全局最优保证、无 KKT/锥对偶证明 |
 
-### 本项目 `spring1219/moonlp` v2.0.0 的不可替代生态净贡献
+### 本项目 `spring1219/moonlp` v1.1.0 的不可替代生态净贡献
 
 > **将 MoonBit 数学规划生态从“线性约束（LP/MILP/连续QP）”跨越式推进到“非线性二阶锥规划与混合整数锥规划”：全生态唯一纯 MoonBit（零 FFI、三后端 `wasm-gc`/`js`/`native`）的 SOCP / QCQP / MISOCP / MIQP 统一求解与独立强对偶证明引擎。**
 
 ---
 
-## 2. 核心能力矩阵对比（`moonopt` vs `moonqp` vs `moonlp` v2.0.0）
+## 2. 核心能力矩阵对比（`moonopt` vs `moonqp` vs `moonlp` v1.1.0）
 
-| 能力维度 | `Freon793/moonopt` | `yujieMamba/moonqp` | **`spring1219/moonlp` v2.0.0** |
+| 能力维度 | `Freon793/moonopt` | `yujieMamba/moonqp` | **`spring1219/moonlp` v1.1.0** |
 | :--- | :---: | :---: | :---: |
 | **二阶锥规划（SOCP）** $\|A_k x + b_k\|_2 \le c_k^T x + d_k$ | 不支持 | 不支持 | **原生支持**（Nesterov-Todd 自缩放 + Mehrotra 预测-校正原始-对偶锥内点法 `solve_socp`） |
 | **凸二次约束规划（QCQP）** $\frac{1}{2}x^T P_k x + q_k^T x \le r_k$ | 不支持 | 不支持 | **原生支持**（`add_quad_constraint` 主元 Cholesky 半正定分解自动无损提升为 Lorentz 锥） |
@@ -60,7 +60,7 @@
 
 ## 4. 复审申报表可直接引用的补充说明（精简版）
 
-> 针对初审意见，我们对 MoonBit 生态全部已有优化库（包括纯线性 LP/MILP 求解器 `Freon793/moonopt` 与纯连续线性约束 ADMM QP 库 `yujieMamba/moonqp`）完成了全面排重，并将项目深度演进至 **`v2.0.0`**，彻底跳出线性规划与连续 QP 赛道，填补 MoonBit 生态在 **二阶锥规划（SOCP / QCQP）、混合整数二阶锥规划（MISOCP / MIQCQP）与混合整数二次规划（MIQP）** 上的完整空白：
+> 针对初审意见，我们对 MoonBit 生态全部已有优化库（包括纯线性 LP/MILP 求解器 `Freon793/moonopt` 与纯连续线性约束 ADMM QP 库 `yujieMamba/moonqp`）完成了全面排重，并将项目深度演进至 **`v1.1.0`**，彻底跳出线性规划与连续 QP 赛道，填补 MoonBit 生态在 **二阶锥规划（SOCP / QCQP）、混合整数二阶锥规划（MISOCP / MIQCQP）与混合整数二次规划（MIQP）** 上的完整空白：
 >
 > 1. **与 `moonopt`、`moonqp` 的本质差异**：
 >    - `Freon793/moonopt` 仅支持线性目标与线性约束（LP/MILP）；`yujieMamba/moonqp` 仅支持连续线性约束 ADMM QP，其 README 明文声明不支持整数变量（MIQP/MISOCP）、不支持非线性/二阶锥约束（QCQP/SOCP）、不支持不可行/无界证明及 `.qps`/`.lp` 工业格式。

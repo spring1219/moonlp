@@ -1,4 +1,4 @@
-# `moonlp` v2.0.0 — Pure MoonBit SOCP / MISOCP / QCQP & MIQP Optimization Kernel
+# `moonlp` v1.1.0 — Pure MoonBit SOCP / MISOCP / QCQP & MIQP Optimization Kernel
 
 [![MoonBit CI](https://github.com/spring1219/moonlp/actions/workflows/ci.yml/badge.svg)](https://github.com/spring1219/moonlp/actions/workflows/ci.yml)
 ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
@@ -12,7 +12,7 @@
 
 详细全生态排重对比见 [docs/comparison_with_moonopt.md](docs/comparison_with_moonopt.md)：
 
-| 能力维度 | `Freon793/moonopt`（线性稀疏 LP/MILP） | `yujieMamba/moonqp`（连续 ADMM QP） | **`spring1219/moonlp` v2.0.0（本项目）** |
+| 能力维度 | `Freon793/moonopt`（线性稀疏 LP/MILP） | `yujieMamba/moonqp`（连续 ADMM QP） | **`spring1219/moonlp` v1.1.0（本项目）** |
 | :--- | :---: | :---: | :---: |
 | **二阶锥规划（SOCP）** $\|A_k x+b_k\|_2 \le c_k^T x+d_k$ | 不支持 | 不支持 | **原生支持**（Nesterov-Todd 自缩放 Mehrotra 原始-对偶锥内点法 `solve_socp`） |
 | **凸二次约束规划（QCQP）** $\frac{1}{2}x^T P x + q^T x \le r$ | 不支持 | 不支持 | **原生支持**（`add_quad_constraint` 主元 Cholesky 自动无损二阶锥提升） |
@@ -101,7 +101,7 @@ let rsol = rocket.solve()       // Optimal 2-burn cost = 75.203126
 
 ```text
 moonlp/
-├── moon.mod                      # MoonBit 1.0 模块配置 (v2.0.0)
+├── moon.mod                      # MoonBit 1.0 模块配置 (v1.1.0)
 ├── docs/
 │   └── comparison_with_moonopt.md # 全生态排重对比（moonopt/moonqp）、差异矩阵与复审说明
 ├── .github/workflows/ci.yml      # wasm-gc / js / native 三后端 --deny-warn + bench 矩阵

@@ -7,7 +7,7 @@
 ///|
 fn main {
   println(
-    "=== moonlp v2.0.0: Pure MoonBit SOCP / MISOCP / QCQP / MIQP / QP / LP / MILP Solver Demo ===\n",
+    "=== moonlp v1.1.0: Pure MoonBit SOCP / MISOCP / QCQP / MIQP / QP / LP / MILP Solver Demo ===\n",
   )
 
   // 1. Production Planning LP + KKT Strong Duality Certificate
