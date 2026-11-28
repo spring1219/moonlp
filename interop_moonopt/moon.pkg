@@ -1,0 +1,8 @@
+import {
+  "Freon793/moonopt",
+  "Freon793/moonopt/model" @mopt_model,
+  "Freon793/moonopt/format" @mopt_format,
+  "spring1219/moonlp",
+}
+
+pkgtype(kind: "executable")

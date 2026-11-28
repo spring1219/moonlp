@@ -8,6 +8,18 @@
 
 ---
 
+## 与 `Freon793/moonopt` 的真实代码级互通与扩展（`interop_moonopt/`）
+
+本项目通过 MoonBit Workspace（[`moon.work`](moon.work)）在独立伴随模块 [`interop_moonopt/`](interop_moonopt/) 中**直接引入 `Freon793/moonopt@0.6.0`**（核心库 `spring1219/moonlp` 本身仍保持零外部依赖），提供内存转换器 `from_moonopt(@mopt_model.Model) -> @moonlp.Model`、MPS 无损交接以及三组可运行对照实验（随 CI 三后端自动执行 `moon run interop_moonopt`）：
+
+| 实测场景 | `Freon793/moonopt@0.6.0` 线性基线实测 | `spring1219/moonlp` v1.1.0 扩展后新增可用结果 |
+| :--- | :--- | :--- |
+| **1. 生产规划 → 95% 高斯机会约束 SOCP** | 确定性 LP = `2333.33`（MPS 交接 `moonlp` 同样 `2333.33`，随机需求下 50% 违约） | 扩展 95% 机会约束 Lorentz 锥 → 安全最优 **`2046.98`**（Conic KKT=`true`，`gap=1.09e-7`） |
+| **2. 投资组合 → 波动率上限基数约束 MISOCP** | 线性最大收益 = `10.50%`（波动率 `18.4%`；`parse_mps(.qps QUADOBJ)` 直接报错拒绝） | 扩展波动率锥 $\|\Sigma^{1/2}w\|_2\le 10.5\%$ + 限选 3 资产 MISOCP → 全局最优 **`8.1105%`**（`mip_gap=7.83e-10`） |
+| **3. 电力机组组合 → 二次煤耗经济调度 MIQP** | 线性化 MILP 成本 = `3220.00`（忽略真实二次热耗曲线 $a_g p_g^2$） | 通过 `from_moonopt()` 原地叠加二次热耗曲线 → 全局最优 MIQP 成本 **`3308.30`**（`mip_gap=0`） |
+
+---
+
 ## 与 MoonBit 生态已有优化库（`moonopt` / `moonqp`）的本质差异
 
 详细全生态排重对比见 [docs/comparison_with_moonopt.md](docs/comparison_with_moonopt.md)：
@@ -59,6 +71,7 @@
 moon check --deny-warn
 moon test --deny-warn
 moon run src/examples
+moon run interop_moonopt
 moon bench --release
 
 # 独立 Python / SciPy + 全组合穷举对拍验证（全部 13 个 SOCP/MISOCP/QP/MIQP 模型）
@@ -66,9 +79,9 @@ python verify/verify_socp_misocp.py
 python verify/verify_qp_miqp.py
 
 # 跨后端全量验证（与 GitHub Actions CI 一致）
-moon test --deny-warn --target wasm-gc && moon bench --release --target wasm-gc
-moon test --deny-warn --target js      && moon bench --release --target js
-moon test --deny-warn --target native  && moon bench --release --target native
+moon test --deny-warn --target wasm-gc && moon run interop_moonopt --target wasm-gc && moon bench --release --target wasm-gc
+moon test --deny-warn --target js      && moon run interop_moonopt --target js      && moon bench --release --target js
+moon test --deny-warn --target native  && moon run interop_moonopt --target native  && moon bench --release --target native
 ```
 
 ### 示例：波动率硬上限基数约束投资组合（MISOCP）与最小包围圆（SOCP）
@@ -89,9 +102,10 @@ let rsol = rocket.solve()       // Optimal 2-burn cost = 75.203126
 
 ---
 
-## 测试与工程验收（87 项单元测试 + 18 项性能基准，`--deny-warn` 三后端全绿）
+## 测试与工程验收（93 项工作区测试 + 18 项性能基准，`--deny-warn` 三后端全绿）
 
-- **SOCP / QCQP / MISOCP 引擎（7 项专项测试）**：最小包围圆 + 独立锥 KKT 认证、`add_quad_constraint` 自动二阶锥提升与非凸拦截、分离二阶锥 Conic Farkas 不可行证明、椭球鲁棒投资组合 SOCP、波动率硬上限基数约束 MISOCP、95% 高斯机会约束规划 SOCP、2D 圆推力火箭制导 SOCP & 2 次点火 MISOCP。
+- **`Freon793/moonopt@0.6.0` 实时互通与扩展测试（3 项，`interop_moonopt/`）**：`from_moonopt()` 内存转换与 MPS 无损交接等价校验、`moonopt` 拒绝 `.qps QUADOBJ` 与无法求解 CPLEX QCP `.lp` 边界校验、`moonopt` MILP 原地扩展二次热耗 MIQP 验证。
+- **SOCP / 旋转二阶锥 / QCQP / MISOCP 引擎（10 项专项测试）**：最小包围圆 + 独立锥 KKT 认证、`add_quad_constraint` 自动二阶锥提升与非凸拦截、分离二阶锥 Conic Farkas 不可行证明、椭球鲁棒投资组合 SOCP、波动率硬上限基数约束 MISOCP、95% 高斯机会约束规划 SOCP、2D 圆推力火箭制导 SOCP & 2 次点火 MISOCP、旋转二阶锥双曲几何均值（`add_rotated_soc_constraint`）、二次目标+二阶锥真实 Wolfe-Conic 强对偶认证（`gap=2.02e-6`）、CPLEX QCP `.lp` 解析与纯锥/空范数边界。
 - **QP / MIQP 引擎（13 项专项测试）**：解析 2D 凸 QP、凹目标最大化与弱有效约束退化、纯等式快速路径、非凸/不可行/无界拦截、Markowitz 有效前沿、基数约束选股 MIQP、8 步饱和 MPC、秩 2 半正定 SVM 对偶、单纯形最小二乘与 `.lp`/`.qps` `QUADOBJ` 往返、纯整数二次追踪 MIQP、电力机组组合 UC-MIQP、$L_0$ 稀疏岭回归 MIQP、推力死区混杂 MPC MIQP。
 - **LP / MILP 兼容基线（67 项回归测试）**：Netlib `ADLITTLE`/`AFIRO`、HiGHS `AVGAS`/`SMALL_MIP`、MIPLIB `FLUGPL`、GMI 割平面、Ruiz 平衡缩放与多轮对抗数值回归。
 

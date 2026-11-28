@@ -843,16 +843,175 @@ pub fn parse_lp(text : String) -> Model raise ParseError {
             "Missing relational operator in constraint: " + clean,
           )
         }
-        let (terms, _) = parse_linear_tokens(
-          tokens, start, rel_idx, model, name_to_id,
-        )
-        let (rhs, rhs_end) = parse_signed_number(tokens, rel_idx + 1)
-        if rhs_end != tokens.length() {
-          raise ParseError(
-            "Unexpected trailing tokens after constraint RHS: " + clean,
-          )
+        // Check for CPLEX QCP quadratic constraint `[ ... ] <= / >= rhs`
+        let mut has_q_bracket = false
+        for k = start; k < rel_idx; k = k + 1 {
+          if tokens[k] == "[" {
+            has_q_bracket = true
+            break
+          }
         }
-        model.add_constraint(cname, terms, rel, rhs)
+        if has_q_bracket {
+          let (rhs, rhs_end) = parse_signed_number(tokens, rel_idx + 1)
+          if rhs_end != tokens.length() {
+            raise ParseError(
+              "Unexpected trailing tokens after QCP constraint RHS: " + clean,
+            )
+          }
+          let lin_toks : Array[String] = []
+          let q_pairs : Array[(VarId, VarId, Double)] = []
+          let mut k = start
+          while k < rel_idx {
+            if tokens[k] == "[" {
+              let mut outer_s = 1.0
+              if lin_toks.length() > 0 {
+                let last = lin_toks[lin_toks.length() - 1]
+                if last == "+" {
+                  let _ = lin_toks.pop()
+                } else if last == "-" {
+                  let _ = lin_toks.pop()
+                  outer_s = -1.0
+                }
+              }
+              k = k + 1
+              let q_toks : Array[String] = []
+              let mut closed = false
+              while k < rel_idx {
+                if tokens[k] == "]" {
+                  closed = true
+                  k = k + 1
+                  break
+                }
+                q_toks.push(tokens[k])
+                k = k + 1
+              }
+              if !closed {
+                raise ParseError("Unclosed '[' in QCP constraint: " + clean)
+              }
+              // Parse quadratic terms inside `[ ... ]` directly into q_pairs
+              let mut qi = 0
+              let mut qs = 1.0
+              while qi < q_toks.length() {
+                if q_toks[qi] == "+" {
+                  qs = 1.0
+                  qi = qi + 1
+                  continue
+                }
+                if q_toks[qi] == "-" {
+                  qs = -1.0
+                  qi = qi + 1
+                  continue
+                }
+                let mut qc = 1.0
+                match try_parse_double(q_toks[qi]) {
+                  Some(num) => {
+                    qc = num
+                    qi = qi + 1
+                    if qi >= q_toks.length() {
+                      raise ParseError("Dangling coeff in QCP constraint")
+                    }
+                  }
+                  None => ()
+                }
+                let v1 = get_or_create_var(model, name_to_id, q_toks[qi])
+                qi = qi + 1
+                if qi >= q_toks.length() {
+                  raise ParseError("Incomplete quad term in QCP constraint")
+                }
+                if q_toks[qi] == "^" {
+                  if qi + 1 >= q_toks.length() || q_toks[qi + 1] != "2" {
+                    raise ParseError("Only ^ 2 supported in QCP constraint")
+                  }
+                  q_pairs.push((v1, v1, outer_s * qs * qc))
+                  qi = qi + 2
+                } else if q_toks[qi] == "*" {
+                  if qi + 1 >= q_toks.length() {
+                    raise ParseError("Missing var after * in QCP constraint")
+                  }
+                  let v2 = get_or_create_var(model, name_to_id, q_toks[qi + 1])
+                  q_pairs.push((v1, v2, outer_s * qs * qc))
+                  qi = qi + 2
+                } else {
+                  raise ParseError("Invalid quad term syntax in QCP constraint")
+                }
+                qs = 1.0
+              }
+            } else {
+              lin_toks.push(tokens[k])
+              k = k + 1
+            }
+          }
+          let (lterms, _) = if lin_toks.length() > 0 {
+            parse_linear_tokens(
+              lin_toks,
+              0,
+              lin_toks.length(),
+              model,
+              name_to_id,
+            )
+          } else {
+            ([], 0.0)
+          }
+          // Convert Ge to Le by negating everything; reject Eq on nonlinear quadratic constraints
+          let dir_sign = match rel {
+            Le => 1.0
+            Ge => -1.0
+            Eq =>
+              raise ParseError(
+                "Convex QCP requires <= or >= quadratic constraint: " + clean,
+              )
+          }
+          let n_cur = model.vars.length()
+          let q_vars : Array[VarId] = []
+          for vi = 0; vi < n_cur; vi = vi + 1 {
+            q_vars.push({ index: vi, })
+          }
+          let p_mat : Array[Array[Double]] = []
+          for _vi = 0; _vi < n_cur; _vi = _vi + 1 {
+            p_mat.push(Array::make(n_cur, 0.0))
+          }
+          for qp = 0; qp < q_pairs.length(); qp = qp + 1 {
+            let (v1, v2, coeff) = q_pairs[qp]
+            let c_eff = dir_sign * coeff
+            if v1.index == v2.index {
+              p_mat[v1.index][v1.index] = p_mat[v1.index][v1.index] + c_eff
+            } else {
+              p_mat[v1.index][v2.index] = p_mat[v1.index][v2.index] +
+                0.5 * c_eff
+              p_mat[v2.index][v1.index] = p_mat[v2.index][v1.index] +
+                0.5 * c_eff
+            }
+          }
+          let lexpr = LinearExpr::zero()
+          for lt = 0; lt < lterms.length(); lt = lt + 1 {
+            let _ = lexpr.add_term(
+              lterms[lt].var_id,
+              dir_sign * lterms[lt].coeff,
+            )
+          }
+          let ok_qcp = model.add_quad_constraint(
+            cname,
+            q_vars,
+            p_mat,
+            lexpr,
+            dir_sign * rhs,
+            half=false,
+          )
+          if !ok_qcp {
+            raise ParseError("Non-convex quadratic constraint in LP: " + clean)
+          }
+        } else {
+          let (terms, _) = parse_linear_tokens(
+            tokens, start, rel_idx, model, name_to_id,
+          )
+          let (rhs, rhs_end) = parse_signed_number(tokens, rel_idx + 1)
+          if rhs_end != tokens.length() {
+            raise ParseError(
+              "Unexpected trailing tokens after constraint RHS: " + clean,
+            )
+          }
+          model.add_constraint(cname, terms, rel, rhs)
+        }
       }
       Bounds => {
         // Case 1: `x free`

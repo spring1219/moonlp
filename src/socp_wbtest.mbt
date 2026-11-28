@@ -175,3 +175,92 @@ test "83. [v2.0 SOCP & MISOCP Model] 2D Isotropic Circular-Thrust Rocket Guidanc
   // Restricted 2-burn switched cost must exceed unrestricted 4-burn continuous cost
   assert_true(s_sw.objective > s_cont.objective)
 }
+
+///|
+test "84. [v1.1 Rotated SOC] Hyperbolic geometric-mean maximization via add_rotated_soc_constraint" {
+  // max t  s.t.  2 * x * y >= (sqrt(2) * t)^2  <=>  x * y >= t^2,  x + 2 y = 12, x, y, t >= 0
+  // Analytical optimum: x = 6, y = 3, t = sqrt(18) = 4.242640687119285
+  let m = Model::new(Maximize)
+  let x = m.add_continuous_var("x", lb=0.0)
+  let y = m.add_continuous_var("y", lb=0.0)
+  let t = m.add_continuous_var("t", lb=0.0, obj=1.0)
+  m.add_constraint(
+    "budget",
+    [{ var_id: x, coeff: 1.0, }, { var_id: y, coeff: 2.0, }],
+    Eq,
+    12.0,
+  )
+  m.add_rotated_soc_constraint(
+    "geom_mean",
+    [LinearExpr::from_var(t, coeff=d_sqrt(2.0))],
+    LinearExpr::from_var(x),
+    LinearExpr::from_var(y),
+  )
+  let (sol, cert) = m.solve_socp_certified()
+  assert_eq(sol.status, Optimal)
+  assert_approx(sol.primal[0], 6.0, 1.0e-5)
+  assert_approx(sol.primal[1], 3.0, 1.0e-5)
+  assert_approx(sol.objective, d_sqrt(18.0), 1.0e-5)
+  assert_true(cert.certified_optimal)
+  assert_true(cert.duality_gap < 1.0e-5)
+}
+
+///|
+test "85. [v1.1 Wolfe-Conic KKT] True strong-duality certification on simultaneous Quad Obj + SOC" {
+  // 2D Isotropic Circular-Thrust Rocket Guidance has BOTH quadratic LQR objective AND 4 Lorentz cones
+  let m = build_isotropic_thrust_mpc_socp(horizon=4, u_max=1.0)
+  let (sol, cert) = m.solve_socp_certified(cert_tol=1.0e-4)
+  assert_eq(sol.status, Optimal)
+  assert_true(cert.certified_optimal)
+  assert_true(cert.primal_feasible)
+  assert_true(cert.dual_conic_feasible)
+  assert_true(cert.duality_gap < 1.0e-3)
+  assert_approx(cert.primal_objective, cert.dual_objective, 1.0e-3)
+}
+
+///|
+test "86. [v1.1 QCP .lp & Edge Cases] CPLEX QCP parser, pure-SOC (m_lin == 0), and empty-norm cone" {
+  // 1) CPLEX .lp with quadratic constraint `[ x ^ 2 + y ^ 2 ] <= 25`
+  let qcp_text =
+    #|Maximize
+    #|  obj: 3 x + 4 y
+    #|Subject To
+    #|  disk: [ x ^ 2 + y ^ 2 ] <= 25
+    #|Bounds
+    #|  x free
+    #|  y free
+    #|End
+  let qm = parse_lp(qcp_text)
+  let (qsol, qcert) = qm.solve_socp_certified()
+  assert_eq(qsol.status, Optimal)
+  assert_approx(qsol.objective, 25.0, 1.0e-5)
+  assert_true(qcert.certified_optimal)
+
+  // 2) Pure-SOC with zero linear inequalities (m_lin == 0): max x + 2y s.t. ||[x, y]||_2 <= 5
+  let pure = Model::new(Maximize)
+  let px = pure.add_continuous_var("x", lb=-1.0e300, ub=1.0e300, obj=1.0)
+  let py = pure.add_continuous_var("y", lb=-1.0e300, ub=1.0e300, obj=2.0)
+  pure.add_soc_constraint(
+    "ball",
+    [LinearExpr::from_var(px), LinearExpr::from_var(py)],
+    LinearExpr::zero().add_const(5.0),
+  )
+  let (psol, pcert) = pure.solve_socp_certified()
+  assert_eq(psol.status, Optimal)
+  assert_approx(psol.objective, 5.0 * d_sqrt(5.0), 1.0e-5)
+  assert_true(pcert.certified_optimal)
+
+  // 3) Empty-norm SOC (||[]||_2 <= 10 - x <=> x <= 10) promoted cleanly to linear inequality
+  let deg = Model::new(Maximize)
+  let dx = deg.add_continuous_var("x", lb=0.0, obj=3.0)
+  deg.add_soc_constraint(
+    "empty_norm",
+    [],
+    LinearExpr::zero().add_const(10.0).add_term(dx, -1.0),
+  )
+  let (dsol, dcert) = deg.solve_socp_certified()
+  assert_eq(dsol.status, Optimal)
+  assert_approx(dsol.primal[0], 10.0, 1.0e-5)
+  assert_approx(dsol.objective, 30.0, 1.0e-5)
+  assert_true(dcert.certified_optimal)
+}

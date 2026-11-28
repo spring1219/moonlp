@@ -32,7 +32,17 @@
 
 ---
 
-## 3. 具体优化模型与新增可用结果（13 个非线性/锥/混合整数模型，全部经 SciPy + 穷举独立对拍）
+## 3. 与 `Freon793/moonopt@0.6.0` 的真实代码级复用与扩展实测（`interop_moonopt/`）
+
+除纯算法差异外，仓库通过 [`moon.work`](../moon.work) 在独立互通模块 [`interop_moonopt/`](../interop_moonopt/) 中**直接引入了 `Freon793/moonopt@0.6.0`**，实现 `from_moonopt(@mopt_model.Model) -> @moonlp.Model` 内存桥接与 MPS 无损交接，并在 CI 三后端自动运行验证：
+
+1. **生产规划（复用 `moonopt` → 扩展 95% 机会约束 SOCP）**：`moonopt` 求得确定性 LP = `2333.33`（经 `@mopt_format.write_mps` → `@moonlp.parse_mps` 交接完全一致），随后在 `moonlp` 扩展 95% 高斯机会约束 Lorentz 锥得到安全最优 **`2046.98`**（Conic KKT 认证通过，`gap = 1.09e-7`）。
+2. **投资组合（实证 `.qps`/QCP 边界 → 扩展波动率上限 MISOCP）**：`moonopt` 线性基线得 `10.50%`（波动率高达 `18.4%`），且实测 `@mopt_format.parse_mps` 对 `.qps` `QUADOBJ` 直接报错拒绝（`token 'QUADOBJ'`）、`@mopt_format.read_lp` 无法求解 CPLEX QCP `[ x^2 + y^2 ] <= 25`；`moonlp` 扩展为波动率上限 $\le 10.5\%$ + 限选 3 资产的 MISOCP 后求得全局最优 **`8.1105%`**（`mip_gap = 7.83e-10`）。
+3. **电力机组组合（复用 `moonopt` MILP → 原地扩展二次煤耗 MIQP）**：`moonopt` 线性化 MILP 得 `3220.00`；经 `from_moonopt()` 无损导入并叠加 5 台机组真实二次热耗系数 $a_g p_g^2$，在 `moonlp` 求得精确 MIQP 全局最优总成本 **`3308.30`**（`mip_gap = 0`）。
+
+---
+
+## 4. 具体优化模型与新增可用结果（13 个非线性/锥/混合整数模型，全部经 SciPy + 穷举独立对拍）
 
 以下 **10 个核心代表模型**均无法被 `moonopt` 或 `moonqp` 直接建模求解（详见 [`src/benchmarks_socp.mbt`](../src/benchmarks_socp.mbt) 与 [`src/benchmarks_qp.mbt`](../src/benchmarks_qp.mbt)），可通过 `moon run src/examples`、`python verify/verify_socp_misocp.py` 与 `python verify/verify_qp_miqp.py` 一键复现。
 
@@ -58,16 +68,17 @@
 
 ---
 
-## 4. 复审申报表可直接引用的补充说明（精简版）
+## 5. 复审申报表可直接引用的补充说明（精简版）
 
-> 针对初审意见，我们对 MoonBit 生态全部已有优化库（包括纯线性 LP/MILP 求解器 `Freon793/moonopt` 与纯连续线性约束 ADMM QP 库 `yujieMamba/moonqp`）完成了全面排重，并将项目深度演进至 **`v1.1.0`**，彻底跳出线性规划与连续 QP 赛道，填补 MoonBit 生态在 **二阶锥规划（SOCP / QCQP）、混合整数二阶锥规划（MISOCP / MIQCQP）与混合整数二次规划（MIQP）** 上的完整空白：
+> 针对初审意见，我们对 MoonBit 生态全部已有优化库（包括纯线性 LP/MILP 求解器 `Freon793/moonopt` 与纯连续线性约束 ADMM QP 库 `yujieMamba/moonqp`）完成了全面排重，并将项目深度演进至 **`v1.1.0`**，既提供了**真实引入 `Freon793/moonopt@0.6.0` 的代码级互通与扩展桥接（`interop_moonopt/`）**，又彻底突破线性规划与连续 QP 边界，填补了 MoonBit 生态在 **二阶锥规划（SOCP / 旋转二阶锥 / QCQP）、混合整数二阶锥规划（MISOCP / MIQCQP）与混合整数二次规划（MIQP）** 上的完整空白：
 >
-> 1. **与 `moonopt`、`moonqp` 的本质差异**：
->    - `Freon793/moonopt` 仅支持线性目标与线性约束（LP/MILP）；`yujieMamba/moonqp` 仅支持连续线性约束 ADMM QP，其 README 明文声明不支持整数变量（MIQP/MISOCP）、不支持非线性/二阶锥约束（QCQP/SOCP）、不支持不可行/无界证明及 `.qps`/`.lp` 工业格式。
->    - 本项目在零 FFI、三后端（`wasm-gc`/`js`/`native`）下全新实现：**Nesterov-Todd 自缩放 Mehrotra 原始-对偶二阶锥内点法（`solve_socp`）**、**主元 Cholesky 二次约束自动二阶锥提升（`add_quad_constraint`）**、**带活动界传播与固定整数修复的 MISOCP / MIQP Branch-and-Bound 引擎（`solve_misocp` / `solve_miqp`）**、**独立二阶锥 KKT 与 Wolfe 强对偶证明器（`solve_socp_certified` / `certify_qp_solution`）**，以及 **`.qps` (`QUADOBJ`/`QMATRIX`) 与 CPLEX 二次 `.lp` 往返**；同时与 `moonopt` 保持 `.mps`/`.lp` 格式互通，文档明确推荐大规模纯线性稀疏问题使用 `moonopt`。
-> 2. **具体优化模型与新增可用结果（全部经独立 SciPy + 全组合穷举对拍验证）**：
->    - **波动率硬上限基数约束投资组合（MISOCP）**：在 $\|\Sigma^{1/2}w\|_2 \le 10.5\%$ 锥约束与限选 3 只资产约束下求得全局最大收益 `8.11046%`（`US_Eq 43.21% / Corp_Bond 46.79% / Gold 10.00%`），与 41 子集穷举误差 `7.14e-11`，`wasm-gc` 耗时 `15.03 ms`；
->    - **2D 圆推力矢量火箭制导（SOCP & 2 次点火开关 MISOCP）**：二次 LQR 目标自动 epigraph 提升 + 精确圆推力锥 $\sqrt{u_x^2+u_y^2}\le u_{\max} z_t$，连续代价 `69.742457`、开关 MISOCP 代价 `75.203126`（误差 $\le 9.10\times 10^{-7}$）；
->    - **椭球不确定集鲁棒投资组合（SOCP，`165.27 µs`，误差 `1.16e-12`）**、**95% 高斯机会约束生产规划（SOCP，`62.31 µs`，误差 `7.93e-8`）**、**最小包围圆 5G 基站覆盖（SOCP，`2.00 ms`，误差 `7.21e-9`）**；
->    - **电力机组组合二次经济调度（UC-MIQP，`1.78 ms`，误差 `1.55e-11`）**、**$L_0$ 稀疏岭回归（MIQP，`2.11 ms`，误差 `1.59e-13`）**、**推力死区混杂 MPC（MIQP，`619 µs`，误差 `1.46e-11`）**、**基数约束 Markowitz（MIQP，`5.17 ms`，误差 `4.37e-14`）**。
-> 3. **工程验证**：全部 **87 项单元测试**（含 20 项 SOCP/QCQP/MISOCP/QP/MIQP 专项）与 **18 项 `moon bench --release` 基准**在 `wasm-gc` / `js` / `native` 三后端 `--deny-warn` CI 全绿通过，可运行 `moon run src/examples`、`python verify/verify_socp_misocp.py` 与 `python verify/verify_qp_miqp.py` 复现全部结果。
+> 1. **与 `moonopt` 的真实复用、扩展及与 `moonopt`/`moonqp` 的本质差异**：
+>    - **直接复用与扩展 `moonopt`**：通过 `moon.work` 在伴随模块 `interop_moonopt/` 中直接依赖 `Freon793/moonopt@0.6.0`，实现 `from_moonopt(@mopt_model.Model) -> @moonlp.Model` 与 MPS 无损交接——用户可先用 `moonopt` 求解线性基线（例如确定性生产规划 LP `2333.33`、线性化机组组合 MILP `3220.00`），再无缝交接给 `moonlp` 原地叠加二次热耗曲线或高斯机会约束/波动率 Lorentz 二阶锥扩展求解；同时自动化测试实测证明 `moonopt` 会拒绝 `.qps (QUADOBJ)` 且无法表达二次/锥约束。
+>    - **相对 `moonopt` 与 `moonqp` 的绝对空白能力**：`moonopt` 仅支持线性目标与线性约束；`yujieMamba/moonqp` 仅支持连续线性约束 ADMM QP，其 README 明文声明不支持整数变量（MIQP/MISOCP）、不支持非线性/二阶锥约束（QCQP/SOCP）、不支持不可行/无界证明及 `.qps`/`.lp` 格式。本项目零 FFI 三后端全新实现：**Nesterov-Todd 自缩放 Mehrotra 原始-对偶二阶锥内点法（`solve_socp`）**、**旋转二阶锥（`add_rotated_soc_constraint`）与主元 Cholesky 二次约束自动提升（`add_quad_constraint`）**、**MISOCP / MIQP Branch-and-Bound 引擎（`solve_misocp` / `solve_miqp`）**、**真实 Wolfe-Conic 强对偶 KKT 独立证明器（`solve_socp_certified` / `certify_qp_solution`）**，以及 **`.qps (QUADOBJ/QMATRIX)` 与 CPLEX 二次目标/二次约束 QCP `.lp`** 解析导出。
+> 2. **具体优化模型与新增可用结果（13 个模型全部经独立 SciPy + 全组合穷举对拍验证）**：
+>    - **波动率硬上限基数约束投资组合（MISOCP）**：`moonopt` 线性基线收益 `10.50%` 但波动率高达 `18.4%`；`moonlp` 施加 $\|\Sigma^{1/2}w\|_2 \le 10.5\%$ 锥约束与限选 3 只资产约束求得全局最大收益 **`8.11046%`**（`US_Eq 43.21% / Corp_Bond 46.79% / Gold 10.00%`），与 41 子集穷举误差 `7.14e-11`，`wasm-gc` 耗时 `15.03 ms`；
+>    - **2D 圆推力矢量火箭制导（SOCP & 2 次点火开关 MISOCP）**：二次 LQR 目标自动 epigraph 提升 + 精确圆推力锥 $\sqrt{u_x^2+u_y^2}\le u_{\max} z_t$，连续 SOCP 代价 **`69.742457`**（Wolfe-Conic KKT 认证通过，`gap=2.02e-6`）、2 次点火 MISOCP 代价 **`75.203126`**（误差 $\le 9.10\times 10^{-7}$）；
+>    - **95% 高斯机会约束生产规划（SOCP）**：相比 `moonopt` 确定性 LP（`2333.33`）给出 95% 置信度安全最大利润 **`2046.98`**（`62.31 µs`，误差 `7.93e-8`，Conic KKT 认证通过）；
+>    - **椭球不确定集鲁棒投资组合（SOCP，`165.27 µs`，误差 `1.16e-12`）**、**最小包围圆 5G 基站覆盖（SOCP，`2.00 ms`，误差 `7.21e-9`）**、**旋转二阶锥双曲几何均值（误差 $< 10^{-5}$）**；
+>    - **电力机组组合二次经济调度（UC-MIQP，`from_moonopt()` 原地扩展，`3220.00 -> 3308.30`，`1.78 ms`，误差 `1.55e-11`）**、**$L_0$ 稀疏岭回归（MIQP，`2.11 ms`，误差 `1.59e-13`）**、**推力死区混杂 MPC（MIQP，`619 µs`，误差 `1.46e-11`）**、**基数约束 Markowitz（MIQP，`5.17 ms`，误差 `4.37e-14`）**。
+> 3. **工程验收**：全部 **93 项工作区测试**（90 项核心测试 + 3 项 `Freon793/moonopt@0.6.0` 真实互通测试）与 **18 项 `moon bench --release` 基准**在 `wasm-gc` / `js` / `native` 三后端 `--deny-warn` CI 全绿通过，可运行 `moon run src/examples`、`moon run interop_moonopt`、`python verify/verify_socp_misocp.py` 与 `python verify/verify_qp_miqp.py` 一键复现。

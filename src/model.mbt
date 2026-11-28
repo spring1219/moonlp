@@ -385,6 +385,31 @@ pub fn Model::add_soc_constraint(
 }
 
 ///|
+/// Add a Rotated Second-Order Cone (Hyperbolic / Quadratic Cone) constraint:
+///   2 * u_expr(x) * v_expr(x) >= || norm_exprs(x) ||_2^2,   u_expr(x) >= 0, v_expr(x) >= 0
+/// Exact Lorentz cone reformulation:
+///   || [ sqrt(2) * norm_exprs(x), u_expr(x) - v_expr(x) ] ||_2 <= u_expr(x) + v_expr(x)
+/// Useful for hyperbolic constraints (x * y >= c), geometric means, and harmonic ratios.
+pub fn Model::add_rotated_soc_constraint(
+  self : Model,
+  name : String,
+  norm_exprs : Array[LinearExpr],
+  u_expr : LinearExpr,
+  v_expr : LinearExpr,
+) -> Unit {
+  let rt2 = d_sqrt(2.0)
+  let lifted : Array[LinearExpr] = []
+  for k = 0; k < norm_exprs.length(); k = k + 1 {
+    lifted.push(norm_exprs[k].scale(rt2))
+  }
+  lifted.push(u_expr.sub_expr(v_expr))
+  let rhs = u_expr.add_expr(v_expr)
+  self.add_expr_constraint(name + "_u_nonneg", u_expr, Ge, 0.0)
+  self.add_expr_constraint(name + "_v_nonneg", v_expr, Ge, 0.0)
+  self.add_soc_constraint(name, lifted, rhs)
+}
+
+///|
 /// Add a convex quadratic constraint (QCQP) over `vars`:
 ///   - `half = true` (default): `0.5 * x_sub^T P x_sub + lin_expr(x) <= rhs`
 ///   - `half = false`:          `x_sub^T P x_sub + lin_expr(x) <= rhs`

@@ -739,17 +739,49 @@ fn solve_socp_internal(
     }
   }
 
-  let m_lin = g_rows.length()
-
   // 4. Append Second-Order Cone rows: s_k = h_k - G_k x in Q_{q_k}
   //    Row 0: s_0 = rhs_expr(x)  => G_0 = -a_0^T, h_0 = d_0
   //    Row j: s_j = norm_expr_j(x) => G_j = -a_j^T, h_j = d_j
+  //    Note: empty norm_exprs (||[]||_2 <= rhs_expr) is promoted to a linear row rhs_expr >= 0.
   let cone_offs : Array[Int32] = []
   let cone_dims : Array[Int32] = []
+  let soc_to_lin_row = Array::make(n_soc, -1)
 
   for k = 0; k < n_soc; k = k + 1 {
     let sc = model.soc_constraints[k]
+    if sc.norm_exprs.length() == 0 {
+      let r0 = Array::make(n, 0.0)
+      let mut h0 = sc.rhs_expr.constant
+      for ti = 0; ti < sc.rhs_expr.terms.length(); ti = ti + 1 {
+        let t = sc.rhs_expr.terms[ti]
+        if !is_finite_double(t.coeff) {
+          return (Solution::empty(NumericalError, 0, 1), [])
+        }
+        let idx = t.var_id.index
+        if is_fixed[idx] {
+          h0 = h0 + t.coeff * fixed_val[idx]
+        } else {
+          let a = orig_to_act[idx]
+          r0[a] = r0[a] - t.coeff
+        }
+      }
+      soc_to_lin_row[k] = g_rows.length()
+      g_rows.push(r0)
+      h_rhs.push(h0)
+      ineq_user_idx.push(-1)
+      ineq_user_sign.push(0.0)
+    }
+  }
+  let m_lin = g_rows.length()
+
+  let soc_to_cone_idx = Array::make(n_soc, -1)
+  for k = 0; k < n_soc; k = k + 1 {
+    let sc = model.soc_constraints[k]
+    if sc.norm_exprs.length() == 0 {
+      continue
+    }
     let dim = 1 + sc.norm_exprs.length()
+    soc_to_cone_idx[k] = cone_offs.length()
     cone_offs.push(g_rows.length())
     cone_dims.push(dim)
 
@@ -1361,13 +1393,18 @@ fn solve_socp_internal(
 
   let soc_duals : Array[Array[Double]] = []
   for k = 0; k < n_soc; k = k + 1 {
-    let off = cone_offs[k]
-    let dim = cone_dims[k]
-    let zk = Array::make(dim, 0.0)
-    for j = 0; j < dim; j = j + 1 {
-      zk[j] = z[off + j]
+    if soc_to_lin_row[k] >= 0 {
+      soc_duals.push([z[soc_to_lin_row[k]]])
+    } else {
+      let cidx = soc_to_cone_idx[k]
+      let off = cone_offs[cidx]
+      let dim = cone_dims[cidx]
+      let zk = Array::make(dim, 0.0)
+      for j = 0; j < dim; j = j + 1 {
+        zk[j] = z[off + j]
+      }
+      soc_duals.push(zk)
     }
-    soc_duals.push(zk)
   }
 
   let exact_obj = model.eval_objective(primal)
@@ -1469,56 +1506,25 @@ pub fn Model::solve_socp_certified(
     certified_optimal: false,
   }
   let (sol, soc_duals) = solve_socp_internal(self, config)
-  if sol.status != Optimal || !self.has_soc_constraints() || self.has_quad_obj() {
-    // For pure QP/LP or lifted quad+SOC, verify primal & cone feasibility directly
-    if sol.status == Optimal && self.verify_solution(sol, tol=cert_tol) {
-      let mut max_cv = 0.0
-      for k = 0; k < self.soc_constraints.length(); k = k + 1 {
-        let sc = self.soc_constraints[k]
-        let r0 = eval_linear_expr(sc.rhs_expr, sol.primal)
-        let mut ssq = 0.0
-        for j = 0; j < sc.norm_exprs.length(); j = j + 1 {
-          let e = eval_linear_expr(sc.norm_exprs[j], sol.primal)
-          ssq = ssq + e * e
-        }
-        let v = d_sqrt(ssq) - r0
-        if v > max_cv {
-          max_cv = v
-        }
-      }
-      if !self.has_soc_constraints() {
-        let qcert = self.certify_qp_solution(sol, tol=cert_tol)
-        return (
-          sol,
-          {
-            primal_feasible: qcert.primal_feasible,
-            dual_conic_feasible: qcert.dual_feasible,
-            max_primal_violation: qcert.max_primal_violation,
-            max_cone_violation: 0.0,
-            max_dual_violation: qcert.max_dual_violation,
-            duality_gap: qcert.duality_gap,
-            primal_objective: qcert.primal_objective,
-            dual_objective: qcert.dual_objective,
-            certified_optimal: qcert.certified_optimal,
-          },
-        )
-      }
-      return (
-        sol,
-        {
-          primal_feasible: true,
-          dual_conic_feasible: true,
-          max_primal_violation: 0.0,
-          max_cone_violation: max_cv,
-          max_dual_violation: 0.0,
-          duality_gap: 0.0,
-          primal_objective: sol.objective,
-          dual_objective: sol.objective,
-          certified_optimal: max_cv <= cert_tol,
-        },
-      )
-    }
+  if sol.status != Optimal {
     return (sol, invalid)
+  }
+  if !self.has_soc_constraints() {
+    let qcert = self.certify_qp_solution(sol, tol=cert_tol)
+    return (
+      sol,
+      {
+        primal_feasible: qcert.primal_feasible,
+        dual_conic_feasible: qcert.dual_feasible,
+        max_primal_violation: qcert.max_primal_violation,
+        max_cone_violation: 0.0,
+        max_dual_violation: qcert.max_dual_violation,
+        duality_gap: qcert.duality_gap,
+        primal_objective: qcert.primal_objective,
+        dual_objective: qcert.dual_objective,
+        certified_optimal: qcert.certified_optimal,
+      },
+    )
   }
 
   let n = self.vars.length()
@@ -1527,6 +1533,42 @@ pub fn Model::solve_socp_certified(
   let sense_sign = match self.sense {
     Minimize => 1.0
     Maximize => -1.0
+  }
+
+  // Optional quadratic objective contribution (Wolfe-Conic Strong Duality):
+  //   min 0.5 x^T Q_min x + c_min^T x  =>  grad += Q_min x, dual_obj -= 0.5 x^T Q_min x
+  let q_min_x = Array::make(n, 0.0)
+  let mut quad_min_half = 0.0
+  if self.has_quad_obj() {
+    let q_orig = self.build_symmetric_hessian()
+    let act_idx : Array[Int32] = []
+    for j = 0; j < n; j = j + 1 {
+      let v = self.vars[j]
+      if !(v.lb > -inf_threshold && v.ub < inf_threshold && v.lb >= v.ub) {
+        act_idx.push(j)
+      }
+    }
+    let h_act : Array[Array[Double]] = []
+    for a = 0; a < act_idx.length(); a = a + 1 {
+      let row = Array::make(act_idx.length(), 0.0)
+      for b = 0; b < act_idx.length(); b = b + 1 {
+        row[b] = q_orig[act_idx[a]][act_idx[b]] * sense_sign
+      }
+      h_act.push(row)
+    }
+    if !is_symmetric_psd(h_act, act_idx.length()) {
+      return (sol, invalid)
+    }
+    let mut xqx = 0.0
+    for i = 0; i < n; i = i + 1 {
+      let mut s_q = 0.0
+      for j = 0; j < n; j = j + 1 {
+        s_q = s_q + q_orig[i][j] * sense_sign * sol.primal[j]
+      }
+      q_min_x[i] = s_q
+      xqx = xqx + sol.primal[i] * s_q
+    }
+    quad_min_half = 0.5 * xqx
   }
 
   // 1. Primal linear, bound, and cone violations
@@ -1542,7 +1584,7 @@ pub fn Model::solve_socp_certified(
     }
   }
   let at_y = Array::make(n, 0.0)
-  let mut dual_min_obj = self.obj_constant * sense_sign
+  let mut dual_min_obj = self.obj_constant * sense_sign - quad_min_half
   let mut max_dv = 0.0
   for i = 0; i < m; i = i + 1 {
     let c = self.constraints[i]
@@ -1621,11 +1663,11 @@ pub fn Model::solve_socp_certified(
   }
 
   // 3. Variable bound multipliers from stationarity:
-  //    s_j = c_min[j] - (A^T y_min)[j] + (G_soc^T z_soc)[j] = z_l[j] - z_u[j]
+  //    s_j = (Q_min x)_j + c_min[j] - (A^T y_min)[j] + (G_soc^T z_soc)[j] = z_l[j] - z_u[j]
   for j = 0; j < n; j = j + 1 {
     let v = self.vars[j]
     let x = sol.primal[j]
-    let s_j = v.obj * sense_sign - at_y[j] + g_soc_t_z[j]
+    let s_j = q_min_x[j] + v.obj * sense_sign - at_y[j] + g_soc_t_z[j]
     let has_lb = v.lb > -inf_threshold
     let has_ub = v.ub < inf_threshold
     if s_j > 0.0 {
