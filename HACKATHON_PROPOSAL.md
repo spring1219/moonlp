@@ -1,7 +1,7 @@
-# MoonBit 2026 开发者黑客松（11月赛季）复审项目申报书
+# MoonBit 2026 开发者黑客松（11月赛季）项目申报书
 
 > **仓库地址**：https://github.com/spring1219/moonlp （`v1.1.0`，GitHub ID：`spring1219`）
-> **补充对比与验证文档**：[`docs/comparison_with_moonopt.md`](docs/comparison_with_moonopt.md) · 实跑互通模块：[`interop_moonopt/`](interop_moonopt/)
+> **生态对比与验证文档**：[`docs/comparison_with_moonopt.md`](docs/comparison_with_moonopt.md) · 实跑互通模块：[`interop_moonopt/`](interop_moonopt/)
 
 ---
 
@@ -11,7 +11,7 @@
 ### 2. 参赛赛道
 **新项目方向 — 开源基础工具库 / 科学计算与运筹优化**
 
-### 3. 针对初审意见的定位重构：生态边界、复用方式与净贡献
+### 3. 项目定位、生态边界与净贡献
 
 截至 2026-11-26，MoonBit 公开包生态与 GitHub 上已有数学优化项目的能力边界如下：
 
