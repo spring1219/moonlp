@@ -68,6 +68,7 @@
 ## 快速开始
 
 ```bash
+moon update
 moon check --deny-warn
 moon test --deny-warn
 moon run src/examples
