@@ -1,7 +1,8 @@
 """
-Independent mathematical cross-verification for moonlp v2.0.0 SOCP & MISOCP models.
-Uses SciPy SLSQP + exact combinatorial enumeration over all binary subsets to verify
-every conic and mixed-integer conic objective value reported by moonlp.
+Independent mathematical cross-verification for moonlp v1.1.0 SOCP & MISOCP models.
+Uses SciPy SLSQP (with exact analytical Jacobians for portable convergence across SciPy versions)
++ exact combinatorial enumeration over all binary subsets to cross-check the recorded objective
+values produced by moonlp's Nesterov-Todd Conic IPM and MISOCP Branch-and-Bound solver.
 """
 import itertools
 import math
@@ -35,15 +36,25 @@ def verify_smallest_enclosing_disk():
 
 def verify_robust_portfolio_socp():
     kappa = 1.5
+
+    def obj(w):
+        vol = math.sqrt(max(float(w @ SIGMA @ w), 1e-18))
+        return -(float(MU @ w) - kappa * vol)
+
+    def obj_jac(w):
+        vol = math.sqrt(max(float(w @ SIGMA @ w), 1e-18))
+        return -MU + kappa * (SIGMA @ w) / vol
+
     res = minimize(
-        lambda w: -(float(MU @ w) - kappa * math.sqrt(max(float(w @ SIGMA @ w), 1e-18))),
+        obj,
         np.ones(6) / 6.0,
+        jac=obj_jac,
         bounds=[(0.0, 0.5)] * 6,
-        constraints=[{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}],
+        constraints=[{"type": "eq", "fun": lambda w: np.sum(w) - 1.0, "jac": lambda w: np.ones(6)}],
         method="SLSQP",
-        options={"ftol": 1e-14, "maxiter": 500},
+        options={"ftol": 1e-10, "maxiter": 500},
     )
-    assert res.success
+    assert res.success, res.message
     check("Robust Ellipsoidal Portfolio SOCP (kappa=1.5)", -res.fun, -0.02622927526278558, tol=1e-6)
 
 
@@ -59,13 +70,18 @@ def verify_vol_capped_cardinality_misocp():
             res = minimize(
                 lambda w: -float(sub_mu @ w),
                 np.ones(k) / k,
+                jac=lambda w: -sub_mu,
                 bounds=[(0.1, 0.5)] * k,
                 constraints=[
-                    {"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
-                    {"type": "ineq", "fun": lambda w: vol_cap * vol_cap - float(w @ sub_sig @ w)},
+                    {"type": "eq", "fun": lambda w: np.sum(w) - 1.0, "jac": lambda w: np.ones(k)},
+                    {
+                        "type": "ineq",
+                        "fun": lambda w: vol_cap * vol_cap - float(w @ sub_sig @ w),
+                        "jac": lambda w: -2.0 * (sub_sig @ w),
+                    },
                 ],
                 method="SLSQP",
-                options={"ftol": 1e-14, "maxiter": 500},
+                options={"ftol": 1e-10, "maxiter": 500},
             )
             if (
                 res.success
@@ -84,19 +100,34 @@ def verify_chance_constrained_socp():
     z_a = 1.644854
     mean = np.array([2.0, 3.0, 1.5])
     std = np.array([0.5, 0.8, 0.4])
+    std2 = std * std
     profit = np.array([50.0, 65.0, 45.0])
+
+    def cc_fun(x):
+        s = math.sqrt(max(float(np.sum(std2 * x * x)), 1e-18))
+        return 100.0 - float(mean @ x) - z_a * s
+
+    def cc_jac(x):
+        s = math.sqrt(max(float(np.sum(std2 * x * x)), 1e-18))
+        return -mean - z_a * (std2 * x) / s
+
     res = minimize(
         lambda x: -float(profit @ x),
         np.array([10.0, 10.0, 10.0]),
+        jac=lambda x: -profit,
         bounds=[(0.0, None)] * 3,
         constraints=[
-            {"type": "ineq", "fun": lambda x: 40.0 - float(np.sum(x))},
-            {"type": "ineq", "fun": lambda x: 100.0 - float(mean @ x) - z_a * math.sqrt(max(float(np.sum((std * x) ** 2)), 1e-18))},
+            {"type": "ineq", "fun": lambda x: 40.0 - float(np.sum(x)), "jac": lambda x: -np.ones(3)},
+            {"type": "ineq", "fun": cc_fun, "jac": cc_jac},
         ],
         method="SLSQP",
-        options={"ftol": 1e-14, "maxiter": 500},
+        options={"ftol": 1e-10, "maxiter": 500},
     )
-    assert res.success
+    assert res.success, res.message
+    sigma_x = math.sqrt(float(np.sum(std2 * res.x * res.x)))
+    z_score = (100.0 - float(mean @ res.x)) / sigma_x
+    exceed_prob = 0.5 * math.erfc(z_score / math.sqrt(2.0))
+    print(f"    95% Chance-Constrained x = {np.round(res.x, 4)}, exceedance prob = {exceed_prob * 100:.4f}% (vs 50.00% for LP)")
     check("95% Gaussian Chance-Constrained SOCP", -res.fun, 2046.9776935197942, tol=1e-5)
 
 

@@ -53,38 +53,37 @@ fn format_linear_terms(model : Model, terms : Array[Term]) -> String {
 }
 
 ///|
-fn format_quad_block(model : Model) -> String {
-  let q = model.build_symmetric_hessian()
+fn format_quad_matrix(model : Model, q : Array[Array[Double]]) -> String {
   let n = model.vars.length()
   let buf = StringBuilder()
   let mut emitted = false
   for i = 0; i < n; i = i + 1 {
     for j = i; j < n; j = j + 1 {
       let c = if i == j { q[i][i] } else { 2.0 * q[i][j] }
-      if c == 0.0 {
+      if c.abs() < 1.0e-13 {
         continue
       }
       if !emitted {
         emitted = true
         if c < 0.0 {
           buf.write_string("- ")
-          if -c != 1.0 {
+          if (-c - 1.0).abs() > 1.0e-12 {
             buf.write_string((-c).to_string())
             buf.write_string(" ")
           }
-        } else if c != 1.0 {
+        } else if (c - 1.0).abs() > 1.0e-12 {
           buf.write_string(c.to_string())
           buf.write_string(" ")
         }
       } else if c < 0.0 {
         buf.write_string(" - ")
-        if -c != 1.0 {
+        if (-c - 1.0).abs() > 1.0e-12 {
           buf.write_string((-c).to_string())
           buf.write_string(" ")
         }
       } else {
         buf.write_string(" + ")
-        if c != 1.0 {
+        if (c - 1.0).abs() > 1.0e-12 {
           buf.write_string(c.to_string())
           buf.write_string(" ")
         }
@@ -102,8 +101,147 @@ fn format_quad_block(model : Model) -> String {
 }
 
 ///|
-/// Export a Model (LP/MILP/QP/MIQP) to standard CPLEX `.lp` text format.
-pub fn Model::to_lp_string(self : Model) -> String {
+fn format_quad_block(model : Model) -> String {
+  format_quad_matrix(model, model.build_symmetric_hessian())
+}
+
+///|
+fn expand_linear_expr_dense(
+  expr : LinearExpr,
+  n : Int32,
+) -> (Array[Double], Double) {
+  let coeffs = Array::make(n, 0.0)
+  for k = 0; k < expr.terms.length(); k = k + 1 {
+    let t = expr.terms[k]
+    coeffs[t.var_id.index] = coeffs[t.var_id.index] + t.coeff
+  }
+  (coeffs, expr.constant)
+}
+
+///|
+/// Attempt to losslessly convert a Second-Order Cone constraint back into a
+/// convex CPLEX `.lp` QCP inequality `lin(x) + x^T Q x <= rhs`.
+/// Succeeds for:
+///   1. Convex quadratic constraints lifted via `add_quad_constraint`
+///      (||[L^T x, u + 0.5]||_2 <= 0.5 - u, where e_last + rhs_expr = alpha > 0)
+///   2. Constant-RHS Lorentz balls ||A x + b||_2 <= d (d >= 0)
+///   3. Degenerate empty-norm SOC `0 <= rhs_expr(x)`
+/// Returns `None` for general affine-RHS Lorentz cones or rotated SOCs that
+/// cannot be losslessly represented as convex CPLEX QCP inequalities.
+fn try_extract_qcp_from_soc(
+  model : Model,
+  sc : SocConstraint,
+) -> (Array[Term], Array[Array[Double]], Double)? {
+  let n = model.vars.length()
+  let q_mat : Array[Array[Double]] = []
+  for _i = 0; _i < n; _i = _i + 1 {
+    q_mat.push(Array::make(n, 0.0))
+  }
+  let lin = Array::make(n, 0.0)
+  let (rc, rd) = expand_linear_expr_dense(sc.rhs_expr, n)
+
+  // Degenerate empty-norm SOC: 0 <= rc^T x + rd  <=>  -rc^T x <= rd
+  if sc.norm_exprs.length() == 0 {
+    let terms : Array[Term] = []
+    for j = 0; j < n; j = j + 1 {
+      if rc[j].abs() >= 1.0e-13 {
+        terms.push({ var_id: { index: j, }, coeff: -rc[j], })
+      }
+    }
+    return Some((terms, q_mat, rd))
+  }
+
+  // Case B: Canonical `add_quad_constraint` form:
+  //   e_last(x) + rhs_expr(x) == alpha > 0  (constant!)
+  //   => 0.5 * sum_{k < last} e_k(x)^2 + 0.5 * alpha * (e_last(x) - rhs_expr(x)) <= 0
+  let num_norm = sc.norm_exprs.length()
+  if num_norm >= 2 {
+    let (lc, ld) = expand_linear_expr_dense(sc.norm_exprs[num_norm - 1], n)
+    let alpha = ld + rd
+    let mut sum_is_const = alpha > 1.0e-12
+    if sum_is_const {
+      for j = 0; j < n; j = j + 1 {
+        if (lc[j] + rc[j]).abs() > 1.0e-11 {
+          sum_is_const = false
+          break
+        }
+      }
+    }
+    if sum_is_const {
+      let mut rhs_out = -0.5 * alpha * (ld - rd)
+      for j = 0; j < n; j = j + 1 {
+        lin[j] = 0.5 * alpha * (lc[j] - rc[j])
+      }
+      for k = 0; k < num_norm - 1; k = k + 1 {
+        let (ac, ad) = expand_linear_expr_dense(sc.norm_exprs[k], n)
+        rhs_out = rhs_out - 0.5 * ad * ad
+        for i = 0; i < n; i = i + 1 {
+          if ac[i] == 0.0 {
+            continue
+          }
+          lin[i] = lin[i] + ad * ac[i]
+          for j = 0; j < n; j = j + 1 {
+            if ac[j] != 0.0 {
+              q_mat[i][j] = q_mat[i][j] + 0.5 * ac[i] * ac[j]
+            }
+          }
+        }
+      }
+      let terms : Array[Term] = []
+      for j = 0; j < n; j = j + 1 {
+        if lin[j].abs() >= 1.0e-13 {
+          terms.push({ var_id: { index: j, }, coeff: lin[j], })
+        }
+      }
+      return Some((terms, q_mat, rhs_out))
+    }
+  }
+
+  // Case A: Constant-RHS Lorentz cone ||A x + b||_2 <= d (d >= 0)
+  //   <=> sum_k (a_k^T x + b_k)^2 <= d^2
+  let mut rhs_is_const = rd >= 0.0
+  if rhs_is_const {
+    for j = 0; j < n; j = j + 1 {
+      if rc[j].abs() > 1.0e-13 {
+        rhs_is_const = false
+        break
+      }
+    }
+  }
+  if rhs_is_const {
+    let mut rhs_out = rd * rd
+    for k = 0; k < num_norm; k = k + 1 {
+      let (ac, ad) = expand_linear_expr_dense(sc.norm_exprs[k], n)
+      rhs_out = rhs_out - ad * ad
+      for i = 0; i < n; i = i + 1 {
+        if ac[i] == 0.0 {
+          continue
+        }
+        lin[i] = lin[i] + 2.0 * ad * ac[i]
+        for j = 0; j < n; j = j + 1 {
+          if ac[j] != 0.0 {
+            q_mat[i][j] = q_mat[i][j] + ac[i] * ac[j]
+          }
+        }
+      }
+    }
+    let terms : Array[Term] = []
+    for j = 0; j < n; j = j + 1 {
+      if lin[j].abs() >= 1.0e-13 {
+        terms.push({ var_id: { index: j, }, coeff: lin[j], })
+      }
+    }
+    return Some((terms, q_mat, rhs_out))
+  }
+
+  None
+}
+
+///|
+/// Export a Model (LP/MILP/QP/MIQP/QCP) to standard CPLEX `.lp` text format.
+/// Returns `Err(...)` instead of silently dropping constraints if the model contains
+/// general Second-Order Cone constraints that cannot be losslessly represented in CPLEX QCP `.lp`.
+pub fn Model::to_lp_string_checked(self : Model) -> Result[String, String] {
   let buf = StringBuilder()
   match self.sense {
     Minimize => buf.write_string("Minimize\n")
@@ -153,6 +291,44 @@ pub fn Model::to_lp_string(self : Model) -> String {
     buf.write_string(" ")
     buf.write_string(c.rhs.to_string())
     buf.write_string("\n")
+  }
+
+  for s = 0; s < self.soc_constraints.length(); s = s + 1 {
+    let sc = self.soc_constraints[s]
+    let qname = if sc.name.length() > 0 {
+      sc.name
+    } else {
+      "qc" + s.to_string()
+    }
+    match try_extract_qcp_from_soc(self, sc) {
+      None =>
+        return Err(
+          "Cannot losslessly export general Second-Order Cone constraint '" +
+          qname +
+          "' to CPLEX .lp format (only linear, quadratic objective, convex QCP, and constant-RHS norm constraints are supported)",
+        )
+      Some((lterms, q_mat, q_rhs)) => {
+        let qstr = format_quad_matrix(self, q_mat)
+        buf.write_string("  ")
+        buf.write_string(qname)
+        buf.write_string(": ")
+        if lterms.length() > 0 && qstr.length() > 0 {
+          buf.write_string(format_linear_terms(self, lterms))
+          buf.write_string(" + [ ")
+          buf.write_string(qstr)
+          buf.write_string(" ] <= ")
+        } else if qstr.length() > 0 {
+          buf.write_string("[ ")
+          buf.write_string(qstr)
+          buf.write_string(" ] <= ")
+        } else {
+          buf.write_string(format_linear_terms(self, lterms))
+          buf.write_string(" <= ")
+        }
+        buf.write_string(q_rhs.to_string())
+        buf.write_string("\n")
+      }
+    }
   }
 
   buf.write_string("Bounds\n")
@@ -213,7 +389,18 @@ pub fn Model::to_lp_string(self : Model) -> String {
   }
 
   buf.write_string("End\n")
-  buf.to_string()
+  Ok(buf.to_string())
+}
+
+///|
+/// Export a Model (LP/MILP/QP/MIQP/QCP) to standard CPLEX `.lp` text format.
+/// Aborts instead of silently dropping constraints if general SOC constraints are present;
+/// use `to_lp_string_checked()` for non-panicking `Result` error handling.
+pub fn Model::to_lp_string(self : Model) -> String {
+  match self.to_lp_string_checked() {
+    Ok(s) => s
+    Err(msg) => abort(msg)
+  }
 }
 
 ///|

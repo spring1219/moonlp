@@ -144,6 +144,7 @@ pub fn Model::add_expr_constraint(Self, String, LinearExpr, Relation, Double) ->
 pub fn Model::add_int_var(Self, String, lb? : Double, ub? : Double, obj? : Double) -> VarId
 pub fn Model::add_quad_constraint(Self, String, Array[VarId], Array[Array[Double]], LinearExpr, Double, half? : Bool) -> Bool
 pub fn Model::add_quad_obj_term(Self, VarId, VarId, Double) -> Unit
+pub fn Model::add_rotated_soc_constraint(Self, String, Array[LinearExpr], LinearExpr, LinearExpr) -> Unit
 pub fn Model::add_soc_constraint(Self, String, Array[LinearExpr], LinearExpr) -> Unit
 pub fn Model::add_var(Self, String, lb? : Double, ub? : Double, kind? : VarKind, obj? : Double) -> VarId
 pub fn Model::analyze_constraints(Self, Solution, tol? : Double) -> Array[ConstraintSensitivity]
@@ -175,7 +176,9 @@ pub fn Model::solve_presolved(Self, config? : SolverConfig) -> Solution
 pub fn Model::solve_scaled(Self, passes? : Int32, config? : SolverConfig) -> (Solution, ScalingReport)
 pub fn Model::solve_socp_certified(Self, config? : SolverConfig, cert_tol? : Double) -> (Solution, SocpCertificate)
 pub fn Model::to_lp_string(Self) -> String
+pub fn Model::to_lp_string_checked(Self) -> Result[String, String]
 pub fn Model::to_mps_string(Self, name? : String) -> String
+pub fn Model::to_mps_string_checked(Self, name? : String) -> Result[String, String]
 pub fn Model::verify_solution(Self, Solution, tol? : Double) -> Bool
 
 #derive(@debug.Debug)

@@ -156,12 +156,87 @@ fn build_moonopt_uc_milp() -> @mopt_model.Model {
 }
 
 ///|
+/// Extend a `moonopt` production planning LP in-place with a 95% Gaussian chance constraint SOC.
+fn extend_production_to_chance_socp(
+  mopt_prod : @mopt_model.Model,
+  z_alpha : Double,
+) -> @moonlp.Model {
+  let m = from_moonopt(mopt_prod)
+  let x1 : @moonlp.VarId = { index: 0, }
+  let x2 : @moonlp.VarId = { index: 1, }
+  let x3 : @moonlp.VarId = { index: 2, }
+  let norm_exprs = [
+    @moonlp.LinearExpr::zero().add_term(x1, 0.5),
+    @moonlp.LinearExpr::zero().add_term(x2, 0.8),
+    @moonlp.LinearExpr::zero().add_term(x3, 0.4),
+  ]
+  let rhs_expr = @moonlp.LinearExpr::zero()
+    .add_const(100.0 / z_alpha)
+    .add_term(x1, -2.0 / z_alpha)
+    .add_term(x2, -3.0 / z_alpha)
+    .add_term(x3, -1.5 / z_alpha)
+  m.add_soc_constraint("machine_95pct_chance", norm_exprs, rhs_expr)
+  m
+}
+
+///|
+/// Extend a `moonopt` linear 6-asset portfolio in-place into a Volatility-Capped Cardinality MISOCP.
+fn extend_portfolio_to_vol_misocp(
+  mopt_port : @mopt_model.Model,
+  max_assets : Int32,
+  vol_cap : Double,
+) -> @moonlp.Model {
+  let sigma = [
+    [0.0400, 0.0240, 0.0040, -0.0020, 0.0180, 0.0020],
+    [0.0240, 0.0484, 0.0035, -0.0015, 0.0160, 0.0050],
+    [0.0040, 0.0035, 0.0064, 0.0025, 0.0045, 0.0015],
+    [-0.0020, -0.0015, 0.0025, 0.0025, -0.0010, 0.0010],
+    [0.0180, 0.0160, 0.0045, -0.0010, 0.0324, 0.0030],
+    [0.0020, 0.0050, 0.0015, 0.0010, 0.0030, 0.0225],
+  ]
+  let m = from_moonopt(mopt_port)
+  let w : Array[@moonlp.VarId] = []
+  let card_terms : Array[@moonlp.Term] = []
+  for i = 0; i < 6; i = i + 1 {
+    let wi : @moonlp.VarId = { index: i, }
+    w.push(wi)
+    let zi = m.add_binary_var("sel_" + i.to_string())
+    card_terms.push({ var_id: zi, coeff: 1.0, })
+    m.add_constraint(
+      "min_hold_" + i.to_string(),
+      [{ var_id: wi, coeff: 1.0, }, { var_id: zi, coeff: -0.1, }],
+      Ge,
+      0.0,
+    )
+    m.add_constraint(
+      "max_hold_" + i.to_string(),
+      [{ var_id: wi, coeff: 1.0, }, { var_id: zi, coeff: -0.5, }],
+      Le,
+      0.0,
+    )
+  }
+  m.add_constraint("cardinality", card_terms, Le, max_assets.to_double())
+  let ok = m.add_quad_constraint(
+    "volatility_cap",
+    w,
+    sigma,
+    @moonlp.LinearExpr::zero(),
+    vol_cap * vol_cap,
+    half=false,
+  )
+  if !ok {
+    abort("Covariance matrix must be PSD")
+  }
+  m
+}
+
+///|
 fn main {
   println(
-    "=== Live Interop & Extension: Freon793/moonopt@0.6.0 + spring1219/moonlp ===\n",
+    "=== Live Interop & In-Place Extension: Freon793/moonopt@0.6.0 + spring1219/moonlp ===\n",
   )
 
-  // 1. Reuse moonopt on deterministic LP, hand off via MPS, then extend to 95% Chance-Constrained SOCP
+  // 1. Reuse moonopt on deterministic LP, hand off via MPS & from_moonopt(), then extend IN-PLACE to 95% Chance-Constrained SOCP
   let mopt_prod = build_moonopt_production_lp()
   let mopt_psol = @moonopt.solve(mopt_prod)
   let mps_text = @mopt_format.write_mps(mopt_prod)
@@ -171,17 +246,19 @@ fn main {
     _ => abort("MPS handoff failed")
   }
   let mlp_lsol = mlp_prod_lin.solve()
-  let cc_model = @moonlp.build_chance_constrained_socp(z_alpha=1.644854)
+  let cc_model = extend_production_to_chance_socp(mopt_prod, 1.644854)
   let (cc_sol, cc_cert) = cc_model.solve_socp_certified()
-  println("[1] Production Planning: moonopt Linear Baseline -> moonlp 95% Chance-Constrained SOCP")
   println(
-    "    moonopt deterministic LP = \{mopt_psol.objective} (MPS handoff moonlp LP = \{mlp_lsol.objective})",
+    "[1] Production Planning: moonopt Linear LP -> from_moonopt() + 95% Chance-Constrained SOCP",
   )
   println(
-    "    moonlp 95% Chance-Constrained SOCP = \{cc_sol.objective} | Conic KKT Certified = \{cc_cert.certified_optimal} (gap = \{cc_cert.duality_gap})\n",
+    "    moonopt deterministic LP = \{mopt_psol.objective} (MPS handoff moonlp LP = \{mlp_lsol.objective}; 50% Gaussian exceedance risk)",
+  )
+  println(
+    "    moonlp in-place SOCP = \{cc_sol.objective} (<= 5% exceedance risk) | Conic KKT = \{cc_cert.certified_optimal} (gap = \{cc_cert.duality_gap})\n",
   )
 
-  // 2. Portfolio: moonopt linear baseline vs moonlp Volatility-Capped Cardinality MISOCP + QPS rejection proof
+  // 2. Portfolio: moonopt linear baseline -> extend IN-PLACE via from_moonopt() to Volatility-Capped Cardinality MISOCP + QPS rejection proof
   let mopt_port = build_moonopt_linear_portfolio()
   let mopt_port_sol = @moonopt.solve(mopt_port)
   let qps_text = @moonlp.build_markowitz_portfolio_qp().to_mps_string(
@@ -191,18 +268,17 @@ fn main {
     Err(issue) => "Rejected as expected: " + issue.to_text()
     Ok(_) => "Unexpectedly accepted"
   }
-  let misocp_port = @moonlp.build_vol_capped_cardinality_misocp(
-    max_assets=3,
-    vol_cap=0.105,
-  )
+  let misocp_port = extend_portfolio_to_vol_misocp(mopt_port, 3, 0.105)
   let misocp_sol = misocp_port.solve()
-  println("[2] Portfolio Risk: moonopt Linear -> moonlp Volatility-Capped Cardinality MISOCP")
   println(
-    "    moonopt linear max-return = \{mopt_port_sol.objective} (concentrated 50% US_Eq + 50% Intl_Eq, ~18.4% volatility!)",
+    "[2] Portfolio Risk: moonopt Linear -> from_moonopt() + Volatility-Capped Cardinality MISOCP",
+  )
+  println(
+    "    moonopt linear max-return = \{mopt_port_sol.objective} (50% US_Eq + 50% Intl_Eq, ~18.4% volatility)",
   )
   println("    moonopt parse_mps(.qps QUADOBJ) -> \{mopt_qps_rejected}")
   println(
-    "    moonlp MISOCP (vol <= 10.5%, <= 3 assets) = \{misocp_sol.objective} | B&B nodes = \{misocp_sol.nodes_explored} | mip_gap = \{misocp_sol.mip_gap}\n",
+    "    moonlp in-place MISOCP (vol <= 10.5%, <= 3 assets) = \{misocp_sol.objective} | B&B nodes = \{misocp_sol.nodes_explored} | mip_gap = \{misocp_sol.mip_gap}\n",
   )
 
   // 3. Unit Commitment: build MILP in moonopt, lift directly via from_moonopt(), add quadratic fuel curves -> MIQP
@@ -214,11 +290,13 @@ fn main {
     uc_extended.add_quad_obj_term({ index: g, }, { index: g, }, quad_a[g])
   }
   let uc_miqp_sol = uc_extended.solve()
-  println("[3] Thermal Unit Commitment: moonopt MILP -> from_moonopt() + Quadratic Heat-Rate MIQP")
   println(
-    "    moonopt linear MILP cost (ignores a_g * p_g^2) = \{mopt_uc_sol.objective}",
+    "[3] Thermal Unit Commitment: moonopt MILP -> from_moonopt() + Quadratic Heat-Rate MIQP",
   )
   println(
-    "    moonlp extended MIQP true quadratic cost = \{uc_miqp_sol.objective} | B&B nodes = \{uc_miqp_sol.nodes_explored} | mip_gap = \{uc_miqp_sol.mip_gap}",
+    "    moonopt linear MILP cost (omits a_g * p_g^2) = \{mopt_uc_sol.objective}",
+  )
+  println(
+    "    moonlp in-place MIQP true quadratic cost = \{uc_miqp_sol.objective} (+88.30 quadratic fuel term) | B&B nodes = \{uc_miqp_sol.nodes_explored} | mip_gap = \{uc_miqp_sol.mip_gap}",
   )
 }

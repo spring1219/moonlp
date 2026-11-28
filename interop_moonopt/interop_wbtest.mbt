@@ -21,12 +21,23 @@ test "1. Exact linear equivalence & MPS handoff between moonopt and moonlp" {
   assert_eq(s_mps.status, @moonlp.Status::Optimal)
   assert_true((s_mopt.objective - s_mps.objective).abs() < 1.0e-7)
 
-  // Extending into 95% Gaussian Chance-Constrained SOCP lowers optimistic profit safely
-  let (s_cc, cert_cc) = @moonlp.build_chance_constrained_socp(z_alpha=1.644854)
-    .solve_socp_certified()
+  // Extending the EXACT converted moonopt model IN-PLACE into 95% Gaussian Chance-Constrained SOCP
+  let cc_extended = extend_production_to_chance_socp(mopt, 1.644854)
+  let (s_cc, cert_cc) = cc_extended.solve_socp_certified()
   assert_eq(s_cc.status, @moonlp.Status::Optimal)
   assert_true(cert_cc.certified_optimal)
+  assert_true((s_cc.objective - 2046.9776935).abs() < 1.0e-3)
   assert_true(s_cc.objective < s_mopt.objective)
+
+  // Extending the EXACT converted moonopt linear portfolio IN-PLACE into Volatility-Capped Cardinality MISOCP
+  let mopt_port = build_moonopt_linear_portfolio()
+  let s_port_lin = @moonopt.solve(mopt_port)
+  assert_eq(s_port_lin.status, @moonopt.SolveStatus::Optimal)
+  let port_misocp = extend_portfolio_to_vol_misocp(mopt_port, 3, 0.105)
+  let s_port_misocp = port_misocp.solve()
+  assert_eq(s_port_misocp.status, @moonlp.Status::Optimal)
+  assert_true((s_port_misocp.objective - 0.081104624).abs() < 1.0e-5)
+  assert_true(s_port_misocp.objective < s_port_lin.objective)
 }
 
 ///|

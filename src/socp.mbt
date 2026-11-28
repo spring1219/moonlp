@@ -1060,20 +1060,81 @@ fn solve_socp_internal(
       }
     }
 
-    // Conic recession-ray unboundedness check
-    if x_inf > 1.0e9 && p_err < 1.0e-3 && cx / x_inf < -1.0e-6 {
-      let mut ad_inf = 0.0
-      for i = 0; i < p; i = i + 1 {
-        let mut adi = 0.0
-        for j = 0; j < n; j = j + 1 {
-          adi = adi + a_rows[i][j] * (x[j] - x0[j])
-        }
-        if adi.abs() > ad_inf {
-          ad_inf = adi.abs()
+    // Verified conic recession-ray unboundedness check:
+    // Only report Unbounded when x significantly exceeds problem RHS scale AND
+    // the normalized direction d = (x - x0) / ||x - x0||_inf satisfies all conic recession laws:
+    //   (1) strictly improving objective: c^T d < -1e-6
+    //   (2) linear equalities:            ||A d||_inf <= 1e-5
+    //   (3) linear inequalities:          (G d)_i <= 1e-5 for all i < m_lin
+    //   (4) every Second-Order Cone k:    -(G_k d)_0 >= ||(G_k d)_{1:}||_2 - 1e-5
+    let rhs_scale = 1.0 + (if b_norm > h_norm { b_norm } else { h_norm })
+    if x_inf > 1.0e9 && x_inf > 1.0e3 * rhs_scale && p_err < 1.0e-3 {
+      let d_ray = Array::make(n, 0.0)
+      let mut d_inf = 0.0
+      for j = 0; j < n; j = j + 1 {
+        let dj = x[j] - x0[j]
+        d_ray[j] = dj
+        if dj.abs() > d_inf {
+          d_inf = dj.abs()
         }
       }
-      if ad_inf / x_inf <= 1.0e-4 {
-        return (Solution::empty(Unbounded, iters, 1), [])
+      if d_inf > 1.0e6 {
+        let mut cd = 0.0
+        for j = 0; j < n; j = j + 1 {
+          d_ray[j] = d_ray[j] / d_inf
+          cd = cd + c_vec[j] * d_ray[j]
+        }
+        if cd < -1.0e-6 {
+          let mut ray_ok = true
+          for i = 0; i < p; i = i + 1 {
+            let mut adi = 0.0
+            for j = 0; j < n; j = j + 1 {
+              adi = adi + a_rows[i][j] * d_ray[j]
+            }
+            if adi.abs() > 1.0e-5 {
+              ray_ok = false
+              break
+            }
+          }
+          if ray_ok {
+            for i = 0; i < m_lin; i = i + 1 {
+              let mut gdi = 0.0
+              let grow = g_rows[i]
+              for j = 0; j < n; j = j + 1 {
+                gdi = gdi + grow[j] * d_ray[j]
+              }
+              if gdi > 1.0e-5 {
+                ray_ok = false
+                break
+              }
+            }
+          }
+          if ray_ok {
+            for k = 0; k < num_cones; k = k + 1 {
+              let off = cone_offs[k]
+              let dim = cone_dims[k]
+              let mut g0 = 0.0
+              for j = 0; j < n; j = j + 1 {
+                g0 = g0 + g_rows[off][j] * d_ray[j]
+              }
+              let mut tail_sq = 0.0
+              for r = 1; r < dim; r = r + 1 {
+                let mut gr = 0.0
+                for j = 0; j < n; j = j + 1 {
+                  gr = gr + g_rows[off + r][j] * d_ray[j]
+                }
+                tail_sq = tail_sq + gr * gr
+              }
+              if -g0 + 1.0e-5 < d_sqrt(tail_sq) {
+                ray_ok = false
+                break
+              }
+            }
+          }
+          if ray_ok {
+            return (Solution::empty(Unbounded, iters, 1), [])
+          }
+        }
       }
     }
 

@@ -401,8 +401,17 @@ pub fn parse_mps(
 }
 
 ///|
-/// Export a Model to industry-standard free-format Netlib/MIPLIB MPS (.mps) text.
-pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
+/// Export a Model (LP/MILP/QP/MIQP) to industry-standard free-format MPS/QPS text.
+/// Returns `Err(...)` instead of silently dropping constraints if SOC/QCP constraints are present.
+pub fn Model::to_mps_string_checked(
+  self : Model,
+  name~ : String = "MOONLP",
+) -> Result[String, String] {
+  if self.has_soc_constraints() {
+    return Err(
+      "Cannot losslessly export Second-Order Cone or quadratic constraints to MPS/QPS format (only linear constraints and QUADOBJ quadratic objectives are supported)",
+    )
+  }
   let buf = StringBuilder()
   buf.write_string("NAME          ")
   buf.write_string(name)
@@ -596,5 +605,16 @@ pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
   }
 
   buf.write_string("ENDATA\n")
-  buf.to_string()
+  Ok(buf.to_string())
+}
+
+///|
+/// Export a Model (LP/MILP/QP/MIQP) to industry-standard free-format MPS/QPS text.
+/// Aborts instead of silently dropping constraints if SOC/QCP constraints are present;
+/// use `to_mps_string_checked()` for non-panicking `Result` error handling.
+pub fn Model::to_mps_string(self : Model, name~ : String = "MOONLP") -> String {
+  match self.to_mps_string_checked(name~) {
+    Ok(s) => s
+    Err(msg) => abort(msg)
+  }
 }

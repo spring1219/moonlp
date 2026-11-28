@@ -264,3 +264,84 @@ test "86. [v1.1 QCP .lp & Edge Cases] CPLEX QCP parser, pure-SOC (m_lin == 0), a
   assert_approx(dsol.objective, 30.0, 1.0e-5)
   assert_true(dcert.certified_optimal)
 }
+
+///|
+test "Test 87: CPLEX QCP .lp lossless round-trip & explicit rejection of non-QCP SOC exports" {
+  // 1) Round-trip max 3x + 4y s.t. x^2 + y^2 <= 25 (free x, y) -> export -> re-parse -> solve == 25.0
+  let lp_src =
+    #|Maximize
+    #|  obj: 3 x + 4 y
+    #|Subject To
+    #|  disk: [ x ^ 2 + y ^ 2 ] <= 25
+    #|Bounds
+    #|  x free
+    #|  y free
+    #|End
+  let m1 = parse_lp(lp_src)
+  let s1 = m1.solve()
+  assert_eq(s1.status, Optimal)
+  assert_approx(s1.objective, 25.0, 1.0e-5)
+
+  let exported = m1.to_lp_string()
+  let m2 = parse_lp(exported)
+  let s2 = m2.solve()
+  assert_eq(s2.status, Optimal)
+  assert_approx(s2.objective, 25.0, 1.0e-5)
+  assert_approx(s2.primal[0], 3.0, 1.0e-4)
+  assert_approx(s2.primal[1], 4.0, 1.0e-4)
+
+  // 2) Round-trip QCP with linear terms: max x + y s.t. 2 x + [ x ^ 2 + y ^ 2 ] <= 24
+  //    <=> (x + 1)^2 + y^2 <= 25, max x + y = -1 + 5*sqrt(2)
+  let lp_lin_qcp =
+    #|Maximize
+    #|  obj: x + y
+    #|Subject To
+    #|  ball: 2 x + [ x ^ 2 + y ^ 2 ] <= 24
+    #|Bounds
+    #|  x free
+    #|  y free
+    #|End
+  let mq1 = parse_lp(lp_lin_qcp)
+  let mq2 = parse_lp(mq1.to_lp_string())
+  let sq2 = mq2.solve()
+  assert_eq(sq2.status, Optimal)
+  assert_approx(sq2.objective, -1.0 + 5.0 * d_sqrt(2.0), 1.0e-4)
+
+  // 3) General Lorentz cone (variable RHS ||x - p||_2 <= r) MUST be explicitly rejected, never silently dropped
+  let disk_socp = build_smallest_enclosing_disk_socp()
+  let lp_res = disk_socp.to_lp_string_checked()
+  assert_true(lp_res is Err(_))
+  let mps_res = disk_socp.to_mps_string_checked()
+  assert_true(mps_res is Err(_))
+}
+
+///|
+test "Test 88: Large-radius bounded SOCP (1e10) never misclassified as Unbounded + verified conic recession ray" {
+  // 1) Bounded large-radius disk: max 3x + 4y s.t. ||(x, y)||_2 <= 1e10 (exact opt = 5e10)
+  //    Must NEVER falsely report Unbounded!
+  let big = Model::new(Maximize)
+  let x = big.add_continuous_var("x", lb=-1.0e300, ub=1.0e300, obj=3.0)
+  let y = big.add_continuous_var("y", lb=-1.0e300, ub=1.0e300, obj=4.0)
+  big.add_soc_constraint(
+    "huge_disk",
+    [LinearExpr::zero().add_term(x, 1.0), LinearExpr::zero().add_term(y, 1.0)],
+    LinearExpr::zero().add_const(1.0e10),
+  )
+  let bsol = big.solve()
+  assert_eq(bsol.status, Optimal)
+  let rel_err = (bsol.objective - 5.0e10).abs() / 5.0e10
+  assert_true(rel_err < 1.0e-5)
+
+  // 2) Truly unbounded SOCP: max x + y s.t. ||[x - y]||_2 <= x + y, x >= 0, y >= 0
+  //    Recession ray d = (1, 1) has c_min^T d = -2 < 0 and ||[0]||_2 <= 2.
+  let unb = Model::new(Maximize)
+  let ux = unb.add_continuous_var("x", lb=0.0, obj=1.0)
+  let uy = unb.add_continuous_var("y", lb=0.0, obj=1.0)
+  unb.add_soc_constraint(
+    "open_cone",
+    [LinearExpr::zero().add_term(ux, 1.0).add_term(uy, -1.0)],
+    LinearExpr::zero().add_term(ux, 1.0).add_term(uy, 1.0),
+  )
+  let usol = unb.solve()
+  assert_eq(usol.status, Unbounded)
+}

@@ -31,3 +31,22 @@ jobs:
           moon run src/examples --target ${{ matrix.target }}
           moon run interop_moonopt --target ${{ matrix.target }}
           moon bench --release --target ${{ matrix.target }}
+
+  verify-scipy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install NumPy & SciPy and cross-verify all 13 nonlinear/conic/mixed-integer models
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy>=1.26" "scipy>=1.13"
+          python -c "import numpy, scipy; print('numpy:', numpy.__version__, 'scipy:', scipy.__version__)"
+          python verify/verify_qp_miqp.py
+          python verify/verify_socp_misocp.py

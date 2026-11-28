@@ -1,7 +1,7 @@
 """
-Independent mathematical cross-verification for moonlp v1.0.0 QP & MIQP models.
+Independent mathematical cross-verification for moonlp v1.1.0 QP & MIQP models.
 Uses pure NumPy / SciPy (SLSQP + exact combinatorial subset enumeration for MIQP)
-to independently verify every objective value reported by moonlp.
+to cross-check the recorded objective values produced by moonlp.
 """
 import itertools
 import math
